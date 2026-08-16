@@ -1,0 +1,23 @@
+{
+  "summary": "Frontend-only E2E for the Dynamic Industry Manager + PWA smoke on Content Director. All requested flows PASS: strategy select shows 6 verticals incl. Real Estate Agent; switching retunes pacing advisor text + success toast; Manage toggle opens IndustryManager listing 6 rows with SELECTED badge on the active one; add QA Pet Grooming (row appears, option appears in select, advisor retunes to entered text); edit flow pre-fills, shows 'Save changes' + Cancel, persists new advisor; delete-guard toast 'Switch to another industry before deleting the selected one' fires when target is SELECTED; after switching to Restaurant, delete succeeds — row + option removed. PWA assets: /manifest.json 200 valid JSON with correct name + 192/512 icons, /sw.js 200, /icons/icon-192.png 200, /icons/apple-touch-icon.png 200; index.html has <link rel=manifest> + apple/mobile web-app meta; service worker registered (1 registration at site scope) with no error logs from SW itself. Regression: two video plaques (flash-campaigns, rules-of-engagement) with URL inputs render, operational-disclaimer amber warning renders. Final state clean: 6 default industries only, select back on Restaurant.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/test_reports/iteration_24.json"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "StrategyPanel.js (~206 lines) is fine size-wise. IndustryManager writes state via setS(await addIndustry(...)) which assumes the backend returns the full strategy doc — good pattern, keep it. Delete-guard is enforced server-side (returns 400) and surfaced via toast.error — clean. Console shows one expected 400 during the delete-guard test; consider suppressing that stack trace at api.js level if you want a quieter console, but it's not a real issue.",
+    "SW registered with network-first behavior confirmed (no stale content, latest builds served). All required data-testids present and stable."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (skipped per request)", "frontend": "100%"},
+  "test_credentials": "owner cookie session_token=tok_owner_e2e (used via context.add_cookies)",
+  "seed_data_creation": "Created transient industry 'QA Pet Grooming' (id qa_pet_grooming) and deleted it at end of run. Final industry list back to the 6 defaults.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "IndustryManager toggle + form + edit/delete flow all verified. If you re-run, remember delete-while-selected returns 400 (expected) — surfaces as a red console entry but is caught and shown as a toast. PWA: sw.js is served at root scope, network-first — hard refresh not needed. Test cookie tok_owner_e2e still valid.",
+  "rca of the issue": "n/a — no bugs found."
+}

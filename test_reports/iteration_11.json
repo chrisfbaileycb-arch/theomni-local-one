@@ -1,0 +1,33 @@
+{
+  "summary": "Frontend-only e2e for the Identified Mystery Spins batch: Game Planner (4-week schedule + play frequency + code expiry), Reward Members CSV export, and updated public /spin consent copy. All 6 scenarios PASS with zero Maximizer console errors. Final state restored to defaults (freq=7, expiry=7, all weeks Auto).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_scenarios_verified": [
+    "Owner Maximizer: games-module now contains data-testid=game-planner with 4 week selects (week-plan-0..3), play-frequency-select (7/14) and code-expiry-select (7/14) dropdowns all rendered correctly",
+    "week-plan-0 -> 'Mystery Prize Vault': GET /api/maximizer/games returns active.source='weekly_schedule', header 'Active game: Mystery Prize Vault', '● ACTIVE (SCHEDULED)' overline visible on that card, sonner toast 'Game plan updated' visible top-right",
+    "Revert week-plan-0 -> 'Auto / pinned': API returns active.source='auto_rotation', header reverts to 'Scan-to-Spin Wheel', '(scheduled)' label gone, back to '(auto)'",
+    "play-frequency-select -> 14: toast 'Game rules updated' observed; select value=14 persisted, then set back to 7 successfully; code-expiry-select stayed at 7 throughout",
+    "Members panel: export-members-btn present with href https://<host>/api/maximizer/members/export.csv; browser fetch (credentials:include) -> status 200, content-type 'text/csv; charset=utf-8', body 3514 bytes (real CSV payload)",
+    "Public /spin?space=Test: consent line 'One play per week.' present next to spin-agree-checkbox (matches playFrequencyDays=7 from public games fetch); fresh email ui.plan.1784500000@example.com + agree -> spin-won with won-code HV-RGQKWE (matches ^(HV|ST)-[A-Z0-9]{6}$)",
+    "Regression: games-module, qr-generator, members-panel, members-table, redemption ledger all render; 8 ledger/redemption testids present; 0 console errors on Maximizer page"
+  ],
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Non-blocking (carried from iter 10): SpinPlay.js still hits GET /api/maximizer/games which requires auth, producing two 401s in the customer's browser console on every /spin page load. Public /spin flow works because the code falls back to freqDays=7, but a public read-only games endpoint (e.g. /api/public/games?space=<label>) would eliminate the noise and let the mystery UX properly hide the game name only if backend consents.",
+    "Non-blocking: Maximizer.js is now 522 lines (approaching the 700-line split threshold noted in iter 10). The game-planner block, members panel, CSV import, welcome queue, RFMD, and ledger are all in one file — good candidate to split into subsections/hooks soon.",
+    "Nice-to-have: the '(scheduled)' overline only shows on the currently-active game card, not on the week-plan select itself. On weeks 1-3 (non-current) there's no visual indicator of which weeks are scheduled vs auto — a small badge next to the select label (e.g. green dot when gameId is set) would help owners see the whole 4-week plan at a glance.",
+    "Nice-to-have: export-members-btn is a plain <a href download> pointing at /api/maximizer/members/export.csv. Cookie auth flows automatically in same-origin, so it works in the Emergent preview. If the app is ever deployed with the API on a different origin, this download will silently 401 and the browser will just navigate away — consider fetching + Blob-download via JS for portability."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested (per request; main agent already ran 85/85 pytest + 10 curls)", "frontend": "100% (6/6 scenarios pass)"},
+  "test_credentials": "Owner cookie session_token=tok_owner_e2e used successfully. Public /spin flow used fresh email ui.plan.<ts>@example.com to bypass the 7-day per-identity lock.",
+  "seed_data_creation": "One reward member row added via UI spin: name 'PlanTest User', email ui.plan.1784500000-ish@example.com, source spin_signup, mystery code HV-RGQKWE. No admin state left behind — 4-week plan reset to Auto and settings back to freq=7 / expiry=7 before finishing.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "1) Game Planner is inside data-testid=games-module -> data-testid=game-planner (which coincidentally also matched selector [data-testid^=game-] so filter with '=' not '^='). 2) Week select values are ISO date strings weekStart; passing empty '' means 'Auto / pinned'. 3) Setting a week schedules that game and GET /api/maximizer/games returns source='weekly_schedule' with '(scheduled)' shown on active card. 4) freq/expiry only accept 7 or 14 — 400s otherwise (per iter 11 backend curls). 5) Every ui.<email> is locked for playFrequencyDays days after a spin — use unique timestamps. 6) Export CSV requires the owner cookie; anonymous fetch returns 401. 7) SpinPlay silently swallows 401 on getGames — expected until a public games endpoint exists."
+}

@@ -1,0 +1,42 @@
+{
+  "summary": "Full backend + frontend E2E verification of the two newly-coded coach features: (1) Coach-to-Calendar and (2) Template Library / Template Shelf. All 9 pytest backend tests pass and all 5 frontend scenarios (+ 2 regression checks) pass with 0 console errors. Both features are production-ready.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "backend_scenarios_verified": [
+    "GET /api/coach/templates (owner Bearer) → 200, {templates:[...]}, list has the 3 seeded rows, each has id/topic/template/createdAt, _id excluded from Mongo, sorted newest-first (descending on createdAt), length capped at 25.",
+    "POST /api/coach/template/{id}/to-calendar on a seeded template with whereItGoes lines → 200 with added[] len==whereItGoes count and addedCount>0. Every post has: source='coach', status='planned', time='11:30 AM', surface ∈ known keyword-map set. Dates start tomorrow and step every 2 days exactly. Posts persist and are returned inside weeks[].days[].posts by GET /api/content/calendar.",
+    "POST /api/coach/template/does-not-exist/to-calendar → 404. DELETE /api/coach/template/does-not-exist → 404.",
+    "Disposable-lifecycle: POST /api/coach/template {topic:'test disposable play'} (REAL Claude, ~15-30s) → 200 with id/topic/template. GET /api/coach/templates confirms it appears newest-first at index 0. GET /api/coach/template/{id}/pdf → 200 application/pdf, body starts with %PDF, >500 bytes. DELETE /api/coach/template/{disposable_id} → 200 {ok:true}. Subsequent GET confirms it is gone AND the 3 seeded ids are all still present (no accidental deletion of user data).",
+    "GET /api/coach/template/{seeded_id}/pdf → 200, content-type application/pdf, %PDF magic bytes, sensible size. GET /api/coach/template/does-not-exist/pdf → 404."
+  ],
+  "frontend_scenarios_verified": [
+    "Owner cookie session_token=tok_owner_e2e set on the Playwright context → app loads without redirect, sidebar shows Owner + Nonna's Corner Deli, 0 console errors.",
+    "nav-content click → Content Director renders. Scrolling to data-testid=ask-the-coach shows the 'Ask the Coach' card with topic input, button, and — below — data-testid=template-shelf listing 3 rows (Paid Local Velocity, Gift Card Push, How Sub Specials Work).",
+    "Each shelf row has data-testid=shelf-open-{id}, shelf-pdf-{id}, shelf-delete-{id}. Clicking shelf-open-{id} renders data-testid=coach-template-panel with correct title ('Paid Local Velocity: Facebook Act-Now Ads + Google Maps Pin Boost') and all four subsections: KEY ELEMENTS, YOUR OFFER, SHOT LIST, WHERE IT GOES.",
+    "coach-to-calendar-btn click → POST /api/coach/template/{id}/to-calendar returns 200; success sonner toast fires: '4 posts dropped on the calendar' with detail listing 2026-07-19 Facebook · 2026-07-21 Google Business · 2026-07-23 Facebook · 2026-07-25 Google Business — surfaces derived correctly from keyword mapping. The ContentCalendar grid in ContentDirector auto-refreshes (window 'omni-calendar-update' event → calendarRef.refresh, plus a second GET /api/content/calendar) and the 4 new 11:30 AM 'Paid Local Velocity' posts appear in the Jul 20-26 week on Thu/Sat and (via wrap) on the visible days — confirmed visually.",
+    "Fresh generate: filling coach-topic-input with 'test disposable play 2' + clicking coach-ask-btn → button shows 'Coaching…' → after ~30s real Claude call the coach-template-panel appears with title 'Test Disposable Play 2: The Low-Stakes Daily Drop'. Shelf refreshes and grows from 3 → 4 rows. Then clicking shelf-delete-{disposable_id} → toast 'Template removed from the shelf' → row disappears; the 3 seeded shelf ids remain intact.",
+    "Regression Content Director: generate-copy-btn + transcript-input render (Speech→Copy), 0 console errors, no failed network calls."
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_coach_library_and_calendar.py",
+    "/app/test_reports/pytest/pytest_coach_library.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py coach_template_to_calendar: id generation uses `int(datetime.now().timestamp()*1000) % 100000` + line index. For back-to-back calls to the same template within the same millisecond, the mod-100000 truncation could theoretically collide. Not observed in practice; consider uuid4() for safety.",
+    "server.py coach_template_to_calendar: no de-duplication guard — calling it twice on the same template will add duplicate posts on the same dates. Product-side decision, but worth confirming intent (currently: 'clicking again drops another 4 posts on top').",
+    "server.py coach_template_to_calendar iterates ALL whereItGoes lines. If a template returns 20 lines from Claude, the calendar will silently sprawl 40 days ahead. Consider a cap (e.g. min(len(lines), 8)).",
+    "Coach.js addToCalendar is a module-level function that mutates a component-local setBusy — clean enough at 105 lines, no split needed.",
+    "ContentDirector.js is at 369 lines and now owns 4+ async flows. Still under the 700-line split threshold. Non-blocking."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_coach_library_and_calendar.py (created)"
+  ],
+  "success_rate": {"backend": "100% (9/9 pytest, 1 real Claude call)", "frontend": "100% (5 requested scenarios + 2 regression, 2 real Claude calls total across the run)"},
+  "test_credentials": "Owner Bearer token tok_owner_e2e + browser cookie session_token=tok_owner_e2e both worked as documented in /app/memory/test_credentials.md.",
+  "seed_data_creation": "One disposable template was created and immediately deleted in each of the backend disposable test and the frontend disposable test — DB net-effect is zero. The 3 pre-existing seeded templates (Paid Local Velocity, Gift Card Push, How Sub Specials Work) are untouched. Coach-to-calendar test posted 4 real coach posts into the shared calendar state for the week of Jul 20-26, 2026 — these are the intended 'planned' entries the feature is designed to leave behind. If a future run wants them removed, delete via POST /api/content/calendar/remove {id:'c-2026-07-19-...'} etc. or /api/content/calendar/reset.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "1) Both /api/coach/template/{id}/to-calendar and DELETE /api/coach/template/{id} follow the seeded-vs-created discipline in the spec — the tests only touch templates they themselves created. 2) The GET /api/content/calendar payload is NOT flat — posts are nested inside weeks[].days[].posts (I initially wrote the wrong assertion looking for a top-level `posts` dict — corrected). 3) The frontend Add-to-Calendar success toast text is exactly 'N posts dropped on the calendar' with a description of 'YYYY-MM-DD · <Surface>' joined with '  ·  '. 4) The window 'omni-calendar-update' CustomEvent listener in ContentDirector.js is at lines 64-68; it calls calendarRef.current.refresh(e.detail) so the calendar re-renders without a second GET (though a GET does still fire because the ContentCalendar component refresh appears to also refetch — 2 GETs observed post-click). 5) Real Claude template generation takes ~15-30s in this environment; 90s client timeout is a safe cap. 6) Server clock currently reads July 2026 (calendar dates confirmed 2026-07-19..25), so any date-sensitive assertions should use `datetime.now(timezone.utc)` on the same machine, not hardcoded values from the problem statement.",
+  "rca of the issue": "N/A — no bugs found. Both features are wired end-to-end: POST returns the right shape, posts persist in state, calendar UI auto-refreshes via CustomEvent, PDF served correctly, delete removes exactly the targeted row, 404s emitted for missing ids, real Claude template generation works, shelf reloads on shelfKey bump, and seeded data is protected from accidental destruction."
+}

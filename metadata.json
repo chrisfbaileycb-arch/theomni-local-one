@@ -1,0 +1,6 @@
+{
+  "name": "OmniLocal #1",
+  "description": "The all-in-one local business revenue engine with spin rewards, quality content executioner, and weekly win reports.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

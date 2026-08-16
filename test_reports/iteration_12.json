@@ -1,0 +1,40 @@
+{
+  "summary": "Frontend-only e2e for the Onboarding Video Vault feature on Content Director + Maximizer drip note + welcome-queue vault video URL. All 7 requested scenarios PASS with zero console errors. Vault state restored to defaults (1/10 captured, 2 in vault, Mother's Day Special featured).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_scenarios_verified": [
+    "Content Director bottom: data-testid=video-vault renders; vault-progress reads '1/10 captured · 2 in vault'; all 10 prompt cards present (vault-prompt-tour, menu_items, kitchen, dining_room, exterior, owner_intro, birthday, holiday, rewards_thanks, new_dish)",
+    "vault-prompt-rewards_thanks captured state: shows playable <video>, Feature and Remove buttons (vault-feature-rewards_thanks, vault-delete-rewards_thanks) all present",
+    "Upload flow: generated 22KB test mp4 via imageio_ffmpeg, set on vault-upload-birthday hidden <input type=file>; chunked upload+save succeeded, card flipped to captured state with <video> element and Feature/Remove buttons; vault-progress updated to '2/10 captured · 3 in vault'",
+    "Campaign card: vault-custom-upload input[type=file] is DISABLED when vault-custom-title is empty and ENABLED once a title is typed (verified via is_disabled()); Mother's Day Special exists in Campaign Library as vault-custom-4a40cf28-... with a Feature button labelled 'Featured' (star filled, primary color)",
+    "Feature toggle on birthday video → navigate to Maximizer → data-testid=drip-vault-note reads: 'Fueled by 3 vault videos · featured: \u201cHappy birthday from all of us\u201d' (color=success). Toggle worked end-to-end",
+    "Maximizer welcome-automation panel renders welcome.ownerVideoUrl as an <a> pointing to https://<host>/api/vault/video/8b62da52-9647-40a8-9769-fc59e50be85f; direct curl (no auth) returns HTTP 200 with content-type video/mp4 and 29843 bytes",
+    "Regression: transcript-input textarea and critic-upload-zone still render on Content Director; 0 console errors captured across full session"
+  ],
+  "cleanup_actions": [
+    "Unfeatured the birthday video (vault-feature-birthday) after feature-toggle test",
+    "Deleted the birthday test video (vault-delete-birthday); vault-progress restored to '1/10 captured · 2 in vault'",
+    "Left the original captured state intact: rewards_thanks still captured + Mother's Day Special still featured"
+  ],
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Non-blocking (carried from iter 11): SpinPlay.js still hits /api/maximizer/games (auth-gated) causing 401s in customer's browser console on /spin — same as prior; not related to vault feature.",
+    "Non-blocking: ContentDirector.js is now 321 lines and Maximizer.js is 527 lines — both fine, but Maximizer is approaching the 700-line split threshold (games/planner/members/CSV/welcome/RFMD/ledger all in one file).",
+    "Minor UX polish: VideoVault.js line 32 fires toast.success 'Saved to your vault' AFTER the vault reload (await load() on line 34 runs before the toast? Actually toast is before load — so toast should fire first). Playwright's wait_for on the toast text timed out at 8s in this run, but the underlying save definitely succeeded (card flipped, progress updated). Sonner default duration is ~4s so the toast likely disappeared before the wait was set up — not a real bug, just noting the test race. Verified via the visible 'Removed from vault' toast in the cleanup screenshot.",
+    "Minor: VideoVault.js line 44 uses plain toast() (no variant) for 'Removed from vault' — small inconsistency vs the success/error variants used elsewhere. Cosmetic only.",
+    "Nice-to-have: The <video> elements in VideoVault set src={vaultVideoUrl(v.id)} which pulls an auth-open endpoint — good. But they also lack preload='metadata' so 10 captured cards would each start eagerly loading their video on mount. On a slow phone this could be sluggish. Consider preload='none' with a poster image."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested (per request; main agent already ran 85/85 pytest + curls)", "frontend": "100% (7/7 scenarios pass)"},
+  "test_credentials": "Owner cookie session_token=tok_owner_e2e used successfully on scan-spin-staging.preview.emergentagent.com.",
+  "seed_data_creation": "One temp birthday video was uploaded (22KB test mp4 from imageio_ffmpeg) and then DELETED during cleanup. Final vault state: 1/10 captured (rewards_thanks) · 2 videos in vault (rewards_thanks + Mother's Day Special featured) — matches the pre-test state exactly.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "1) VideoVault is imported by ContentDirector.js and renders at the very bottom — always scroll to the end of Content Director to see it. 2) The 10 prompt IDs are exactly: tour, menu_items, kitchen, dining_room, exterior, owner_intro, birthday, holiday, rewards_thanks, new_dish. 3) Upload buttons are <label> elements wrapping hidden <input type='file'> — use input.set_input_files() rather than clicking the label (label's data-testid is vault-upload-<promptId> but the file input is inside it). 4) Campaign upload input has disabled={!!uploading || !customTitle.trim()} — assert via input.is_disabled(). 5) The Feature toggle immediately affects the drip endpoint — check drip-vault-note on Maximizer for the change. 6) welcome-queue ownerVideoUrl is public (no auth required for /api/vault/video/{id}). 7) After any upload test, delete the test video via vault-delete-<promptId> and unfeature if you featured it, to keep vault state clean for next iteration.",
+  "rca of the issue": "N/A — no bugs found."
+}

@@ -1,0 +1,113 @@
+{
+  "theme": "Light Theme Only",
+  "instructions_to_main_agent": [
+    "CRITICAL BUG FIX: The current codebase references CSS variables that were never defined (--primary, --success, --danger, --text-secondary, --text, --info, --bg). You MUST alias these in your styles or CSS file to map to the real tokens: --primary to --brand/orange (#D35400), --success to --green (#27AE60), --danger to --red (#C0392B), --text to --ink (#1A1A1A), --text-secondary to --ink-2 (#5C5A56), --bg to --bone (#FDFCF8), --info to --blue (#2980B9).",
+    "CRITICAL: Do not introduce a dark theme. The user explicitly stated they don't like being in a black screen.",
+    "CRITICAL: This is a styling polish, NOT a full rewrite. Elevate the existing layout using the defined shadows, typography, and spacing.",
+    "Do not use complete transparent background in headers, overlays, or dropdowns. Use solid backgrounds or glassmorphism (backdrop-blur with solid white tint).",
+    "Preserve the 'accordion style / coffee shop Instagram feed' aesthetic by using clean cards with high-quality borders and padding."
+  ],
+  "typography": {
+    "headings": {
+      "family": "Cormorant Garamond, serif",
+      "weights": ["Medium", "SemiBold", "Bold"],
+      "usage": "Use for primary page headers (H1), major section titles (H2), and brand moments. Allows for elegant, editorial feel. Keep letter-spacing slightly tight."
+    },
+    "body": {
+      "family": "Manrope, sans-serif",
+      "weights": ["Regular", "Medium", "SemiBold"],
+      "usage": "Use for all UI elements, buttons, standard card descriptions, and navigation. Highly readable, modern, and clean."
+    },
+    "data_and_numbers": {
+      "family": "JetBrains Mono, monospace",
+      "weights": ["Medium", "Bold"],
+      "usage": "Use exclusively for ROAS metrics, money counters, analytics data, and dates to instill a high-trust, technical precision feel."
+    }
+  },
+  "colors": {
+    "backgrounds": {
+      "app_base": "var(--bone, #FDFCF8)",
+      "card_surface": "var(--surface, #FFFFFF)",
+      "card_surface_alt": "var(--surface-alt, #F4F1EA)"
+    },
+    "text": {
+      "primary": "var(--ink, #1A1A1A)",
+      "secondary": "var(--ink-2, #5C5A56)"
+    },
+    "accents": {
+      "brand_primary": "var(--brand, #D35400)",
+      "success": "var(--green, #27AE60)",
+      "warning": "var(--amber, #F39C12)",
+      "danger": "var(--red, #C0392B)",
+      "info": "var(--blue, #2980B9)"
+    },
+    "borders": {
+      "default": "var(--border, #E8E6DF)"
+    }
+  },
+  "visual_enhancers": {
+    "shadows": {
+      "ambient_lift": "0 4px 24px -6px rgba(0, 0, 0, 0.05), 0 0 0 1px rgba(232, 230, 223, 0.5)",
+      "hover_lift": "0 12px 32px -12px rgba(211, 84, 0, 0.15), 0 0 0 1px rgba(211, 84, 0, 0.2)"
+    },
+    "radii": {
+      "cards": "8px (rounded-lg)",
+      "buttons": "9999px (rounded-full / pill)",
+      "inner_elements": "6px (rounded-md)"
+    },
+    "borders": {
+      "default": "1px solid #E8E6DF",
+      "active": "1px solid #D35400"
+    }
+  },
+  "spacing_and_layout": {
+    "general": "Use generous spacing. Standard padding inside main cards should be p-6 or p-8. Gap between sections should be gap-8 or gap-12.",
+    "card_style": "Neumorphic/Tactile variant adapted for Light Mode. White background, crisp 1px border (#E8E6DF), rounded-lg, with the ambient_lift shadow.",
+    "page_container": "Max-width optimized (max-w-7xl), centered, with px-4 sm:px-6 lg:px-8 padding."
+  },
+  "components": {
+    "buttons": {
+      "primary": "Pill-shaped (rounded-full), bg-[#D35400], text-white, hover:-translate-y-0.5 transition-transform, hover:shadow-lg.",
+      "secondary": "Pill-shaped, bg-white, border border-[#E8E6DF], text-[#1A1A1A], hover:bg-[#F4F1EA]."
+    },
+    "content_calendar": {
+      "description": "Weekly grid of planned posts with 'add weeks ahead' capability.",
+      "layout": "CSS Grid (grid-cols-7) for desktop. Header shows days of the week. Sticky top control for 'Week of X'.",
+      "card_items": "Small, dense cards inside grid cells. bg-white with a left-border strip indicating the social channel (e.g., Pink for Instagram, Blue for Facebook). Text should use Manrope text-xs.",
+      "add_weeks_ahead": "A ghost button at the bottom or top right (e.g., '+ Plan Next Week') that expands the grid vertically."
+    },
+    "local_market_intelligence": {
+      "description": "Event cards feeding actionable ad suggestions.",
+      "layout": "Flexbox row (or stack on mobile). Left side: 'Event Card' (e.g., Baseball icon, Date, 'Little League Regionals'). Middle: Visual connector (e.g., an arrow or dashed line). Right side: 'Action Card' (e.g., 'Shift $50 to Google Maps Pin Boost').",
+      "visuals": "Event card should use bg-[#F4F1EA]. Action card should have a subtle border of --brand (#D35400) to highlight the revenue-generating action. Include a '1-Click Approve' button."
+    }
+  },
+  "motion_and_interactions": {
+    "hover_states": "Cards should use hover:-translate-y-1 and transition-all duration-300 ease-out. Buttons should scale slightly (hover:scale-105).",
+    "page_load": "Use Framer Motion to stagger the entrance of cards. initial={{ opacity: 0, y: 10 }}, animate={{ opacity: 1, y: 0 }}, transition={{ staggerChildren: 0.1 }}."
+  },
+  "accessibility_and_testing": {
+    "contrast": "Ensure text contrast meets APCA/WCAG standards. Use --ink (#1A1A1A) on white/bone backgrounds.",
+    "testing": "All interactive and key informational elements MUST include a data-testid attribute (e.g., data-testid='calendar-next-week-btn')."
+  },
+  "images": {
+    "brand_asset_vault": [
+      {
+        "url": "https://images.unsplash.com/photo-1542372147193-a7aca54189cd?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2MjJ8MHwxfHNlYXJjaHwxfHxjb2ZmZWUlMjBzaG9wJTIwaW50ZXJpb3IlMjBhZXN0aGV0aWN8ZW58MHx8fHwxNzg0MzQ3MzI3fDA&ixlib=rb-4.1.0&q=85",
+        "description": "Latte, croissant, and book on cafe table. Use this to mock the Brand Asset Vault aesthetic for the coffee shop."
+      },
+      {
+        "url": "https://images.pexels.com/photos/34393282/pexels-photo-34393282.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Warmly lit cafe seating area. Use for additional social media post drafts."
+      }
+    ]
+  },
+  "universal_guidelines_for_main_agent": [
+    "You tend to converge toward generic outputs. Avoid this: make creative, distinctive frontends that surprise and delight.",
+    "DO NOT center align the app container (.App { text-align: center; } is banned).",
+    "DO NOT apply universal transitions (transition: all). Target specific properties like transition-transform or transition-colors.",
+    "Ensure every interactive element has a clear hover state and data-testid.",
+    "Use 2-3x more spacing than feels comfortable. Cramped designs look cheap.",
+    "Never use AI assistant emoji characters (🤖🧠💡) for icons. Use proper icon libraries like Lucide or Phosphor."
+  ]
+}

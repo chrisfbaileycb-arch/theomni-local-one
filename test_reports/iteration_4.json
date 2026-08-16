@@ -1,0 +1,34 @@
+{
+  "summary": "Iteration 4: validated the two new Content Director features (Local Market Intelligence + Content Calendar) and the app-wide light-bone theme + orange/green accent CSS variables. Backend: extended pytest suite from 29 -> 35 tests, all passing (added TestLocalEvents + TestContentCalendar). Frontend: verified light theme (body bg rgb(253,252,248), --primary=#D35400, --success=#27AE60), Content Director navigation, market insight banner + 5 event rows, calendar 2 initial weeks / 14 day cells, Plan Next Week (adds week 2), quick-add form, per-post remove, Add-to-Calendar from an event (post count 13 -> 14 after click), reset (returns to 2 weeks). Regression on generate-copy-btn, grade-video-0, publish-all-btn, and full nav (overview/executioner/maximizer/content) still clean with no console errors. Calendar left in default 2-week state; connections left in default (facebook/instagram/google ON, tiktok/youtube OFF).",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py: LOCAL_EVENTS is computed once at import time via datetime.now(); the seeded event dates (and daysAway) freeze at process start and can drift on long-running processes. Consider recomputing on each /content/local-events call (or storing only inDays offsets and formatting dates at request time).",
+    "server.py _calendar_payload / _seed_calendar mutate module-level CALENDAR + CALENDAR_WEEKS globals — not concurrency-safe. Fine for single-worker demo; add asyncio.Lock or move to a store if uvicorn --workers >1.",
+    "calendar_add_post: no validation that req.date matches an actual planned week — a caller could post to any date string. Consider clamping to CALENDAR_WEEKS window or auto-adding the week.",
+    "LocalMarketIntel.addToCalendar computes promoDate via new Date(ev.date) which parses YYYY-MM-DD as UTC — in negative-UTC timezones this shifts a day earlier. For US-based owners this is usually fine but worth flagging (use string arithmetic instead).",
+    "ContentCalendar surfaceColor() is duplicated logic that only lives in the UI — consider serving the color from the backend alongside surface for a single source of truth.",
+    "content_local_events insight.suggestedShiftPct caps at 80 which matches spec, but sum(budgetShift) is over ALL upcoming (<=14 days) — if events sit within same window this can overweight in production data (currently capped, so safe).",
+    "server.py file has grown past 1350 lines — three logical modules (content, executioner, maximizer + email) are worth splitting into routers under /app/backend/routers/ for maintainability.",
+    "Carry-over from prior iterations: oauth_start/oauth_callback return HTTP 200 with an error field for unknown platforms; in-memory REPORTS/CONNECTIONS/WELCOME_QUEUE/CALENDAR unbounded; spin() uses unseeded random.Random()."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py"
+  ],
+  "success_rate": { "backend": "100%", "frontend": "100%" },
+  "test_credentials": "None — public demo, no auth.",
+  "seed_data_creation": "Calendar reset back to default 2-week state after UI test. Connections untouched (default facebook/instagram/google ON, tiktok/youtube OFF).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend tests: `pytest /app/backend/tests/backend_test.py -n auto` (35 tests, ~2.5s). New classes: TestLocalEvents (payload + insight cap), TestContentCalendar (initial 2-week state, add-week, add+remove manual post with source='manual', reset). Frontend testids for the new Content Director cards: local-market-intel, market-insight, event-row-evt-0..4, add-event-evt-<n>; content-calendar, calendar-week-<i>, calendar-day-<YYYY-MM-DD>, calendar-post-<id>, remove-post-<id>, calendar-next-week-btn, calendar-add-date, calendar-add-title, calendar-add-surface, calendar-add-btn, calendar-reset-btn. CSS variables now resolved: --primary=#D35400 (orange), --success=#27AE60 (green), body bg rgb(253,252,248) (bone). All prior nav testids (nav-overview/executioner/maximizer/content) still work; publish-all, grade-video-0, generate-copy-btn, connect-<platform> flows untouched by this iteration and confirmed working.",
+  "rca of the issue": "No bugs found. Local events feed sorted correctly by daysAway with the required insight fields (headline, upcomingCount, topEvent, recommendedChannel, suggestedShiftPct<=80). Calendar CRUD (get / add-week / add-post / remove / reset) round-trips through the UI: post counts move deterministically (9 initial -> 14 after Plan-Next-Week+add -> 13 after remove -> 14 after add-event-evt-0 -> reset back to 2 weeks with initial totalPosts). Cross-feature Add-to-Calendar from LocalMarketIntel correctly refreshes the calendar via calendarRef.refresh."
+}

@@ -1,0 +1,149 @@
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500;600;700&family=Manrope:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bone: #FDFCF8;
+  --surface: #FFFFFF;
+  --surface-alt: #F4F1EA;
+  --ink: #1A1A1A;
+  --ink-2: #5C5A56;
+  --brand: #D35400;
+  --brand-hover: #A84300;
+  --green: #27AE60;
+  --amber: #F39C12;
+  --red: #C0392B;
+  --blue: #2980B9;
+  --border: #E8E6DF;
+  --primary: var(--brand);
+  --primary-hover: var(--brand-hover);
+  --text: var(--ink);
+  --text-secondary: var(--ink-2);
+  --success: var(--green);
+  --danger: var(--red);
+  --info: var(--blue);
+  --bg: var(--bone);
+}
+
+* { border-color: var(--border); }
+
+body {
+  margin: 0;
+  background: var(--bone);
+  color: var(--ink);
+  font-family: 'Manrope', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Typographic identity. Components reference .serif and .mono throughout —
+   these two rules are what put Cormorant Garamond on headings and JetBrains
+   Mono on every money/ROAS figure. */
+.serif, .font-display { font-family: 'Cormorant Garamond', Georgia, serif; letter-spacing: -0.01em; }
+.mono, .font-mono-nums { font-family: 'JetBrains Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+
+.overline {
+  font-size: 0.7rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--ink-2);
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 4px 24px -6px rgba(0,0,0,0.05), 0 0 0 1px rgba(232,230,223,0.5);
+}
+.card-alt { background: var(--surface-alt); }
+
+.lift {
+  transition: transform 0.3s cubic-bezier(0.2,0.7,0.2,1), box-shadow 0.3s ease, border-color 0.3s ease;
+}
+.lift:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 12px 32px -12px rgba(211,84,0,0.15), 0 0 0 1px rgba(211,84,0,0.2);
+  border-color: rgba(211,84,0,0.35);
+}
+
+.btn {
+  font-family: 'Manrope', sans-serif;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 0.7rem 1.5rem;
+  cursor: pointer;
+  border: none;
+  transition: transform 0.15s ease, background-color 0.2s ease, color 0.2s ease;
+}
+.btn:hover { transform: translateY(-1px); }
+.btn:active { transform: scale(0.96); }
+.btn-primary { background: var(--brand); color: #fff; }
+.btn-primary:hover { background: var(--brand-hover); color: #fff; box-shadow: 0 8px 20px -8px rgba(211,84,0,0.45); }
+.btn-ghost { background: transparent; color: var(--ink); border: 1px solid var(--border); }
+.btn-ghost:hover { background: var(--surface-alt); color: var(--ink); }
+
+.nav-item {
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+@keyframes riseIn {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.rise { animation: riseIn 0.5s ease both; }
+
+@keyframes spinWheel {
+  to { transform: rotate(var(--spin-to)); }
+}
+
+@keyframes bulbBlink {
+  0%, 100% { opacity: 1; filter: drop-shadow(0 0 4px #F39C12); }
+  50% { opacity: 0.35; filter: none; }
+}
+
+@keyframes tickerWiggle {
+  0%, 100% { transform: translateX(-50%) rotate(0deg); }
+  25% { transform: translateX(-50%) rotate(-14deg); }
+  75% { transform: translateX(-50%) rotate(12deg); }
+}
+
+@keyframes prizePop {
+  0% { transform: scale(0.85); opacity: 0; }
+  60% { transform: scale(1.04); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes glowPulse {
+  0%, 100% { box-shadow: 0 0 20px rgba(211, 84, 0, 0.4), inset 0 0 15px rgba(243, 156, 18, 0.3); }
+  50% { box-shadow: 0 0 35px rgba(211, 84, 0, 0.7), inset 0 0 25px rgba(243, 156, 18, 0.5); }
+}
+
+.anim-bulb { animation: bulbBlink 1.4s ease-in-out infinite; }
+.anim-ticker { animation: tickerWiggle 0.12s ease-in-out infinite; }
+.anim-pop { animation: prizePop 0.45s cubic-bezier(0.175, 0.885, 0.32, 1.275) both; }
+.anim-glow { animation: glowPulse 2s infinite ease-in-out; }
+
+/* Keyboard focus is part of the polish: a visible brand ring, no layout shift. */
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+input:focus-visible, textarea:focus-visible, select:focus-visible {
+  outline: none;
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px rgba(211,84,0,0.15);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lift, .btn, .nav-item { transition: none; }
+  .lift:hover, .btn:hover { transform: none; }
+  .rise { animation: none; }
+}
+
+::selection { background: var(--brand); color: #fff; }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: #d8d5cc; border-radius: 8px; }

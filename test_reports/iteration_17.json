@@ -1,0 +1,31 @@
+{
+  "summary": "Verified Spot QR Sheet PDF + Weekly Win Report auto-email (STUB MODE) end-to-end. All 18 backend tests (test_qr_sheet_report_email.py + test_locations_weekly.py) pass. Frontend flows: STUB MODE badge, recipient pre-fill, timezone select, Send Now, toggle off/on persistence, timezone Central→Eastern persistence, qr-sheet-btn download link + copy — all working. Regression clean: weekly-report PDF, /api/maximizer/locations, spot presets, QR generator. Settings restored to defaults (enabled=true, tz=America/New_York, recipient falls back to owner.test@example.com). Scheduler running with zero 'Win report scheduler tick failed' entries. STUB MODE (no RESEND_API_KEY) is intentional and CORRECT per problem statement.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "PUT /api/maximizer/report-email", "issue": "PUT {recipient: null} is silently ignored (code uses `if req.recipient is not None`) — only empty string '' clears the recipient back to owner-email fallback. Not a bug per current UX (empty input clears), but null-vs-empty distinction is subtle. Consider treating null as clear if it matters to API consumers."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_qr_sheet_report_email.py",
+    "/app/backend/tests/test_locations_weekly.py"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is very large (>2200 lines). Consider splitting into modules (auth, maximizer, reports, scheduler) for maintainability — not blocking.",
+    "PUT /maximizer/report-email accepts recipient='' as clear-fallback but null is ignored. Document or normalize the behavior."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "cookie session_token=tok_owner_e2e / Bearer tok_owner_e2e (owner)",
+  "seed_data_creation": "None. Only mutated report-email settings and restored to defaults.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Both new features fully verified. Backend 18/18 green. Frontend all 7 report-email testids present + qr-sheet-btn on Maximizer under spot-presets. Send-now returns status='stubbed' by design (RESEND_API_KEY empty). Weekly report PDF still 200 application/pdf. Reset settings performed post-test — no cleanup owed.",
+  "rca of the issue": "No issues found this iteration."
+}

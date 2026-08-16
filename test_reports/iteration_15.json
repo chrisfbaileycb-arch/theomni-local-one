@@ -1,0 +1,46 @@
+{
+  "summary": "Iteration 15 — regression verification of the 4 security-hardening fixes E1 applied on top of the iter_14 100% baseline (uploadId UUID validation, app-level CORS lockdown, no-raw-exception-leak, coach to-calendar hardening). Backend: full pytest suite 94/94 PASS (~156s) + 17/17 new security regression tests PASS. Frontend smoke: owner cookie loads dashboard, Content Director renders Ask-the-Coach + Template Shelf (3 seeded rows), 0 console errors, 0 network failures. All 4 hardening changes are working correctly with no regressions.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "verified_security_fixes": [
+    "Fix 1 (uploadId validation) — POST /api/content/critic/upload/chunk with uploadId='../../etc/passwd' → 400 'Invalid uploadId.' (no file written to /etc/). Same for /content/critic/analyze and /vault/save with malformed ids. Well-formed unknown UUID (00000000-0000-4000-8000-000000000000) returns 404 on chunk/analyze/vault-save as expected. Helper _upload_part() at server.py:2109 correctly gates all three routes.",
+    "Fix 2 (CORS lockdown) — against http://localhost:8001/api/: OPTIONS + GET with Origin=https://evil.com → NO access-control-allow-origin header returned. OPTIONS + GET with Origin=https://template-vault-41.preview.emergentagent.com → access-control-allow-origin echoes the exact approved origin. allow_origin_regex on emergent domains works; '*' correctly stripped from CORS_ORIGINS env value.",
+    "Fix 3 (no raw exception leak) — grep of server.py for `detail=f\"...{e...}\"` pattern in HTTPException returns ZERO matches. Generic 502 messages now in place; logger.exception/logger.error still retained for observability. (Automated via TestNoRawExceptionLeak.)",
+    "Fix 4 (coach to-calendar hardening) — POST /api/coach/template/{id}/to-calendar on 'Paid Local Velocity' returns addedCount=4 (equal to that template's whereItGoes length; regex ^c-\\d{4}-\\d{2}-\\d{2}-[0-9a-f]{8}$ matches every post id (uuid4 hex, no more timestamp-mod collision risk); addedCount ≤ 8 cap enforced via lines[:8] at server.py:2444. Test cleans up its own 4 posts via /content/calendar/remove so shared calendar is not polluted."
+  ],
+  "backend_scenarios_verified": [
+    "Full pytest suite: cd /app/backend && python -m pytest tests/ -q → 94 passed in 155.66s (matches expectation from the review request; the 2 updated TestVideoCritic tests correctly assert 400 for malformed + 404 for well-formed unknown UUID).",
+    "New /app/backend/tests/test_security_iter15.py: 17 focused tests across TestUploadIdValidation (7), TestCORSLockdown (4, using localhost:8001 to bypass ingress), TestNoRawExceptionLeak (2, static-scan server.py), TestChunkPipelineHappyPath (1, init→2 chunks with real UUID, size accumulates), TestCoachRegression (2, seeded templates + to-calendar id format + cap) → 17/17 PASS.",
+    "Regression happy path: /content/critic/upload/init returns UUID v4-shaped uploadId; two subsequent chunks of 1024 bytes each return 200 and size accumulates from 1024 → 2048.",
+    "Coach seeded templates untouched: GET /api/coach/templates still returns the 3 seeded rows (Paid Local Velocity, Gift Card Push, How Sub Specials Work), all with id/topic/template, _id excluded from Mongo."
+  ],
+  "frontend_scenarios_verified": [
+    "Owner cookie session_token=tok_owner_e2e set on the Playwright context → https://template-vault-41.preview.emergentagent.com loads without redirect, sidebar shows 'Test Owner · OWNER · APPROVER' and active restaurant 'Nonna's Corner Deli'.",
+    "Click sidebar nav-content → Content Director renders. Scroll reveals data-testid=ask-the-coach ('How does this work?' card with topic input + Get the template button) and data-testid=template-shelf with the 3 seeded rows: Paid Local Velocity, Gift Card Push, How Sub Specials Work — each with Open / PDF / Delete controls. All rows show 2026-07-18 date badge.",
+    "0 console errors and 0 network failures (>=400) captured during the entire smoke run."
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_security_iter15.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/test_coach_library_and_calendar.py",
+    "/app/test_reports/pytest/iteration_15.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py:2555 — allow_origins list comprehension explicitly filters out '*' entries, which is the correct hardening; the current /app/backend/.env still ships CORS_ORIGINS=\"*\" (a no-op after the filter). Consider updating the env to an explicit approved-origins list for clarity, e.g. CORS_ORIGINS=\"https://template-vault-41.preview.emergentagent.com\" — non-blocking since the regex covers all emergent hosts.",
+    "server.py:2110 — _upload_part uses a strict lower-case UUID v4 regex ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}). uuid.uuid4() output is lower-case by default so this is fine, but if any client ever normalizes to upper-case it will be rejected. Minor; not a real risk today.",
+    "server.py:2444 — lines[:8] cap applied BEFORE the `if not lines: 400` check. If a Claude template returns 0 whereItGoes lines, the endpoint still 400s cleanly; if it returns 9-20, only the first 8 land. Both branches verified.",
+    "server.py:2456 — post id now uses uuid4().hex[:8]. 8-hex random has ~4.3B space per date; collision probability is negligible in practice. Good replacement for timestamp-mod-100000.",
+    "server.py:2452 — the week-of computation `(start + timedelta(days=i * 2) - timedelta(days=(start + timedelta(days=i * 2)).weekday())).strftime` is duplicated three times in one expression. Not a bug, but readability would benefit from a `d = start + timedelta(days=i*2)` local. Non-blocking."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_security_iter15.py (NEW — 17 regression tests for the 4 security fixes)"
+  ],
+  "success_rate": {"backend": "100% (94/94 pytest + 17/17 iter-15 security tests)", "frontend": "100% (owner-cookie load + Content Director + Ask-the-Coach + Template Shelf, 0 console errors, 0 network failures)"},
+  "test_credentials": "Owner Bearer tok_owner_e2e + cookie session_token=tok_owner_e2e both worked per /app/memory/test_credentials.md. No secrets required beyond that.",
+  "seed_data_creation": "The Coach to-calendar regression test added 4 planned posts on Paid Local Velocity dates then immediately deleted all 4 via /api/content/calendar/remove — DB net-effect zero. The 3 pre-existing seeded coach templates are untouched. Full pytest suite creates and cleans its own TEST_ data as before (no changes from iter_14).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "1) CORS testing MUST be done against http://localhost:8001 directly — the platform ingress at template-vault-41.preview.emergentagent.com injects its own 'access-control-allow-origin: *' header regardless of the app's response. Reproduced this: external OPTIONS with Origin=evil.com returns '*' from ingress; internal localhost OPTIONS returns nothing (correct). 2) _UPLOAD_ID_RE at server.py:2106 is strict UUID v4 lower-case only. 3) coach-to-calendar post-id format is now c-YYYY-MM-DD-<8-hex-chars> — any test that pattern-matches on the OLD c-YYYY-MM-DD-<int> format will fail (updated backend_test.py + test_coach_library_and_calendar.py already accept the new format via the seeded templates). 4) CORS_ORIGINS=\"*\" in /app/backend/.env is intentionally filtered out by the middleware code; do NOT change it to blank or the emergent regex path will still work but any deploy-time approved-origin list will need to go there. 5) Frontend smoke was intentionally light per the review request; iteration_14 full frontend suite remains the reference for coach features. 6) No new mocks were introduced; Google Business publish + Resend email + unified social OAuth remain stubbed as before.",
+  "rca of the issue": "N/A — all 4 hardening fixes verified working, 94 pre-existing tests still pass, no regressions in the coach + calendar + upload pipelines. The security posture is materially improved: path-traversal in uploadId is now impossible (regex-gated before any filesystem access), evil origins no longer receive CORS credentials at the app layer (ingress-level ACAO is a platform decision outside this app's scope), stack traces no longer leak from 4 previously-vulnerable endpoints (AI copywriter, video analysis, storage upload, coach template), and coach post ids can no longer collide within a millisecond nor overrun the calendar with runaway whereItGoes lists."
+}

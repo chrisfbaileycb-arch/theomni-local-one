@@ -1,0 +1,47 @@
+{
+  "summary": "Iteration 5: validated Phase 0 (MongoDB persistence) + Phase 1A (real Claude Sonnet 4.6 copywriter) + Brand Brain editor. Backend: expanded pytest suite from 35 → 39 tests, all passing serially. New classes: TestBrandProfile (GET shape + PUT partial-update + persistence via GET), TestPersistenceAcrossRestart (mutates codes.length=11, executioner /reconcile, brand voice → sudo supervisorctl restart backend → verifies all three survived → restores demo defaults). Updated tests: test_content_copy now asserts model='claude-sonnet-4-6', all 3 drafts non-empty and distinct (real LLM, not templated); test_oauth_start_unknown_platform expects 404 (was 200-with-error); added test_oauth_callback_unknown_platform → 404. Frontend: Brand Brain card renders with brand-brain/brand-edit-btn/brand-voice-input/brand-menuHighlights-input/brand-backstory-input/brand-save-btn — edit → change → save → success toast → collapses to read view (brand-voice text visible). Speech→Copy calls real /api/content/copy (~15–25s live LLM) and renders three distinct on-brand posts. Fixed one testid mismatch (see updated_files) so drafts now expose data-testid draft-gbp / draft-facebook / draft-instagram per spec. Regression on grade-video-0, publish-all-btn, local-market-intel, content-calendar (calendar-next-week-btn), add-event-evt-0, full nav — all clean, no console errors, light bone theme intact. State restored to demo defaults at end (8-char codes, executioner reset, calendar reset, default brand voice, connections default facebook/instagram/google ON tiktok/youtube OFF).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: address code-review comments below (large server.py, ai_generate_drafts hardening).",
+    "OPTIONAL: prefix TEST_ persistence artifacts more aggressively (currently restored via API, but if pytest is killed mid-test the DB is left in TEST_persist_voice state — the test is idempotent on rerun but consider try/finally cleanup)."
+  ],
+  "critical_code_review_comments": [
+    "server.py has grown to ~1350 lines and now mixes DB access, Pydantic models, seeded data, LLM integration, and route handlers — split into routers/ (content, executioner, maximizer, connections, codes, email) + a services/ layer for state_get/state_set + a data/ module for seed builders. This will be a real maintenance burden by Phase 2.",
+    "ai_generate_drafts: no timeout, no retry, no cost/rate-limit guard. A single hung LLM call blocks the request for uvicorn's whole worker slot; a burst of traffic could stall the whole app. Wrap the send_message in asyncio.wait_for(..., timeout=30) and raise a 504 explicitly, and consider rate-limiting per session_id/IP.",
+    "_parse_drafts calls json.loads without a fallback — a single malformed model response yields a 500 (currently masked as 502 by content_copy's blanket except). Log the raw text on parse failure so drift in the model output is debuggable. Consider using response_format={'type':'json_object'} if the LlmChat wrapper supports it.",
+    "content_copy inserts to db.ai_generations without any TTL/cap — this collection grows unbounded. Add a TTL index on createdAt or cap the collection.",
+    "state_get returns default=None if key is missing — several call sites (calendar_add_week, welcome_queue reads) then mutate the returned dict/list assuming it's non-None. For newly-provisioned DBs where seed_state has not yet completed the check, these routes will 500. Startup seeds cover this in practice, but make defaults concrete: `await state_get('welcome_queue', []) or []`.",
+    "state_set stores raw dicts/lists in `state.value`. Pydantic-typed round-trips would give schema evolution safety (e.g. brand-profile is currently accepting arbitrary partial keys without validation beyond BrandProfileReq — extra keys are silently dropped by pydantic which is fine, but consider explicit validation of orderUrl as a URL, igHandle format, etc.).",
+    "oauth_start/oauth_callback now 404 for unknown platforms (per Phase 0 requirement) ✓ — good fix.",
+    "recommended_plan(reports, connections) assumes reports is non-empty; a fresh install between DB provision and startup seed could 500 on IndexError. Guard with `if not reports: return {...}`.",
+    "seed_state is best-effort but not idempotent: if the process crashes mid-seed after seeding 3 of 8 keys, a subsequent restart will only seed the missing 5 — fine — but there is no schema-version check, so a future migration will need to intercept legacy shapes. Add a version key in `state.__meta__`.",
+    "Front-end Draft component displayed platform key literally as the label ('Google Business', 'Facebook', 'Instagram') AND used that string as the data-testid — I split the two (data-testid=draft-<slug>, label=<pretty>) to match the spec.",
+    "Content calendar mutations do not use $push atomically — full doc read-modify-write on every call. Fine for one demo restaurant, but with concurrent owners you'd overwrite each other's edits."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py",
+    "/app/frontend/src/sections/ContentDirector.js"
+  ],
+  "success_rate": {
+    "backend": "100% (39/39 serial)",
+    "frontend": "100%"
+  },
+  "test_credentials": "None — public demo, no auth.",
+  "seed_data_creation": "None persistent. Persistence test mutated + restored: codes back to length 8, executioner reset, calendar reset, brand voice restored to default, connections reset to default (facebook/instagram/google ON, tiktok/youtube OFF). ai_generations collection has ~2 new rows from live Claude Sonnet 4.6 calls (one from pytest, one from Playwright).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run backend tests SERIALLY: `pytest /app/backend/tests/backend_test.py -n 0` (39 tests, ~18s). TestPersistenceAcrossRestart restarts the backend via supervisor, which causes transient 502s on any test running in parallel (loadscope pins classes to workers so under -n 2 gw1 hits the restart window while gw0 is mid-test on TestContentDirector/TestPublishAll). Running with -n 0 avoids the race; a rerun of the 4 racy tests immediately passes. Consider marking TestPersistenceAcrossRestart with pytest.mark.serial or moving it to a separate file executed after the main suite. Real LLM calls (/content/copy) take 5–25s; timeouts are set to 90s. Frontend Draft testids are now data-testid='draft-gbp' / 'draft-facebook' / 'draft-instagram' with a separate 'label' prop for display. Brand Brain testids: brand-brain, brand-edit-btn, brand-save-btn, brand-{voice|menuHighlights|backstory}-input for editing and brand-{voice|menuHighlights|backstory} for read view.",
+  "rca of the issue": "No bugs found in Phase 0 or Phase 1A behavior. One testability mismatch fixed inline: frontend Draft component originally emitted data-testid='draft-Google Business' etc. which did not match the spec's expected data-testid='draft-gbp' etc. — decoupled the platform slug from the human label. Real Claude Sonnet 4.6 output verified: three distinct, on-brand, platform-native posts (GBP with order URL + CTA, Facebook with a question, Instagram with 5–7 hashtags and @nonnascorner). Backend restart persistence verified end-to-end: mutated 3 different state keys (codes length, reports array grown by 1, brand voice), issued `sudo supervisorctl restart backend`, waited for /api/ to return 200 again, confirmed all 3 mutations survived, then restored defaults. Parallel test transient 502s are a test-harness limitation of restarting the SUT while sibling workers hit it — NOT a product bug."
+}
