@@ -150,12 +150,48 @@ export const importCustomerCsv = (csv) => client.post("/maximizer/import-csv", {
 export const getWelcomeQueue = () => client.get("/maximizer/welcome-queue").then((r) => r.data);
 export const sendWelcome = (index) => client.post("/email/send-welcome", { index }).then((r) => r.data);
 
-// Codes & Redemption
+// Presets & Industry Architecture
+export const getPresets = () => client.get("/content/presets").then((r) => r.data);
+export const applyPreset = (presetId) => client.post("/content/presets/apply", { presetId }).then((r) => r.data);
+
+// Campaign Cadence & Anti-Fatigue Controls
+export const getCadence = () => client.get("/campaign/cadence").then((r) => r.data);
+export const launchSprint = (days = 7) => client.post("/campaign/cadence/sprint", { days }).then((r) => r.data);
+export const switchRestMode = () => client.post("/campaign/cadence/rest").then((r) => r.data);
+export const tuneMarginFloor = (maxDiscountPct, minSpendReq) =>
+  client.post("/campaign/cadence/margin-floor", { maxDiscountPct, minSpendReq }).then((r) => r.data);
+
+// Codes & Dual-Mode Voucher Engine
 export const getCurrentBatch = () => client.get("/codes/current").then((r) => r.data);
-export const generateBatch = (length) => client.post("/codes/generate", { length }).then((r) => r.data);
+export const generateBatch = (length, masterPosCode) => client.post("/codes/generate", { length, masterPosCode }).then((r) => r.data);
+export const voucherLookup = (q) => client.get("/codes/voucher-lookup", { params: { q } }).then((r) => r.data);
+export const redeemStaffVoucher = (code, netSales, staffNote) =>
+  client.post("/codes/redeem-voucher", { code, netSales, staffNote }).then((r) => r.data);
+export const exportClaimCodesUrl = () => `${API}/codes/export.csv`;
 export const getSampleCsv = () => client.get("/codes/sample-csv").then((r) => r.data);
 export const reconcileCsv = (csv) => client.post("/codes/reconcile", { csv }).then((r) => r.data);
 
 // Email Engine (Anti-Spam Trickle)
 export const getTricklePlan = () => client.get("/email/trickle-plan?total=3000").then((r) => r.data);
 export const previewEmail = (content) => client.post("/email/preview", { content }).then((r) => r.data);
+
+// Physical Print Asset Studio & Multi-Surface QR Engine
+export const getPrintStudioTemplates = () => client.get("/print-studio/templates").then((r) => r.data);
+export const generatePrintAsset = (data) => client.post("/print-studio/generate", data).then((r) => r.data);
+
+export const getAttributionSources = () => client.get("/attribution/sources").then((r) => r.data);
+export const importAttributionCsv = (source, csv) => client.post("/attribution/import", { source, csv }).then((r) => r.data);
+export const getAttributionSampleUrl = (source) => `${API}/attribution/samples/${source}`;
+export const clearAttributionSources = () => client.post("/attribution/clear").then((r) => r.data);
+
+// Cumulative Knowledge Base & Longitudinal Learning
+export const getKnowledgeProfile = () => client.get("/knowledge/profile").then((r) => r.data);
+export const advanceLearningMaturity = () => client.post("/knowledge/advance-maturity").then((r) => r.data);
+
+// Multi-Track Campaign Strategy & Cadence
+export const getCampaignTracks = () => client.get("/campaigns/tracks").then((r) => r.data);
+export const toggleCampaignTrack = (trackId) => client.post(`/campaigns/tracks/${trackId}/toggle`).then((r) => r.data);
+
+// Human-Gated Approvals Staging
+export const stageHumanApproval = (body) => client.post("/approvals/stage", body).then((r) => r.data);
+

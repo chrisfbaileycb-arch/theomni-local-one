@@ -18,78 +18,290 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 // ---------------------------------------------------------------------------
 // IN-MEMORY DATABASE & PERSISTENT SEEDS
 // ---------------------------------------------------------------------------
-const DEFAULT_BRAND_PROFILE = {
-  name: "Nonna's Corner Deli",
-  city: "Springfield",
-  cuisine: "Italian-American deli",
-  signatureItem: "The Sunday Gravy Sub",
-  voice: "Warm, proud, family-run and unpretentious. Speaks like a neighbor who loves feeding people — confident about quality, never corporate or salesy.",
-  menuHighlights: "Sunday Gravy Sub, house-pulled mozzarella, six-hour Sunday gravy, fresh-baked hero rolls",
-  backstory: "A three-generation family deli; recipes carried from Naples by Nonna herself.",
-  igHandle: "nonnascorner",
-  orderUrl: "https://order.nonnascorner.com"
+const BUSINESS_PRESETS = {
+  // 1. Appointment / Service
+  tattoo: {
+    id: "tattoo",
+    category: "Appointment / Service",
+    categoryKey: "appointment_service",
+    name: "Iron & Needle Tattoo Co.",
+    city: "Springfield",
+    industryLabel: "Tattoo Studio",
+    signatureItem: "Custom 3-Hour Flash & Realism Session",
+    voice: "Artistic, bold, obsessive about craft and sterile excellence. Speaks with deep respect for body art traditions.",
+    menuHighlights: "Custom realism, traditional flash sheets, cover-ups, sterile studio protocol",
+    backstory: "Founded by master tattooist Leo Vance in 2014, blending classic Americana flash with modern fine-line realism.",
+    igHandle: "ironandneedletattoo",
+    orderUrl: "https://book.ironandneedle.com",
+    masterPosCode: "TAT50-PROMO",
+    prizeBoard: {
+      goodPrizes: [
+        { label: "50% Off 3-Hr Tattoo Session", posCode: "TAT50-PROMO" },
+        { label: "$25 Off $100 Service", posCode: "TAT25-OFF" },
+        { label: "Free Aftercare Kit & Touchup", posCode: "TAT-AFTERCARE" },
+        { label: "20% Off Flash Sheet Walk-In", posCode: "TAT-FLASH20" }
+      ],
+      dudPrize: { label: "$10 Off Consultation Deposit", posCode: "TAT10-DEP" }
+    }
+  },
+  spa: {
+    id: "spa",
+    category: "Appointment / Service",
+    categoryKey: "appointment_service",
+    name: "Lumina Day Spa & Wellness",
+    city: "Springfield",
+    industryLabel: "Spa & Wellness",
+    signatureItem: "Signature 90-Min Hot Stone Recovery",
+    voice: "Serene, restorative, polished and attentive. Dedicated to holistic wellness and stress relief.",
+    menuHighlights: "Hot stone massage, organic botanical facials, hydrotherapy, infrared sauna",
+    backstory: "An oasis of calm created to restore mental clarity and physical rejuvenation.",
+    igHandle: "luminaspa",
+    orderUrl: "https://book.luminaspa.com",
+    masterPosCode: "SPA-RECOVERY",
+    prizeBoard: {
+      goodPrizes: [
+        { label: "Free Aromatherapy Add-On Service", posCode: "SPA-AROMA" },
+        { label: "$25 Off $100 Service", posCode: "SPA25-OFF" },
+        { label: "30% Off First Botanical Facial", posCode: "SPA-FACIAL30" },
+        { label: "Complimentary Scalp Ritual", posCode: "SPA-RITUAL" }
+      ],
+      dudPrize: { label: "10% Off Organic Body Butter", posCode: "SPA10-PROMO" }
+    }
+  },
+  salon: {
+    id: "salon",
+    category: "Appointment / Service",
+    categoryKey: "appointment_service",
+    name: "Artisan Grooming & Salon",
+    city: "Springfield",
+    industryLabel: "Salon & Barber",
+    signatureItem: "Master Cut & Scalp Treatment",
+    voice: "Chic, trendy, master-level craftsmanship and attentive personal styling.",
+    menuHighlights: "Precision scissor cuts, balayage color, hot towel straight razor shaves, scalp therapy",
+    backstory: "Award-winning styling studio dedicated to elevating personal confidence and individual aesthetic.",
+    igHandle: "artisansalons",
+    orderUrl: "https://book.artisansalon.com",
+    masterPosCode: "SALON-VIP",
+    prizeBoard: {
+      goodPrizes: [
+        { label: "Free Deep Conditioning Treatment", posCode: "SALON-DEEP" },
+        { label: "25% Off Cut & Color Package", posCode: "SALON-COLOR25" },
+        { label: "$15 Off Master Styling Service", posCode: "SALON-15OFF" },
+        { label: "Free Styling Clay or Shine Mist", posCode: "SALON-PRODUCT" }
+      ],
+      dudPrize: { label: "$5 Off Next Blowout", posCode: "SALON5-SAVE" }
+    }
+  },
+  auto_detail: {
+    id: "auto_detail",
+    category: "Appointment / Service",
+    categoryKey: "appointment_service",
+    name: "Apex Precision Detailing",
+    city: "Springfield",
+    industryLabel: "Auto Detail & Service",
+    signatureItem: "Full Ceramic Shield & Paint Correction",
+    voice: "Meticulous, engineering-grade precision, honest and dedicated to vehicle preservation.",
+    menuHighlights: "9H ceramic coating, multi-stage paint correction, interior steam extraction, wheel protection",
+    backstory: "Started by automotive enthusiasts obsessed with showroom-finish gloss and long-term surface preservation.",
+    igHandle: "apexdetailing",
+    orderUrl: "https://book.apexdetail.com",
+    masterPosCode: "APEX-CERAMIC",
+    prizeBoard: {
+      goodPrizes: [
+        { label: "Free Ceramic Boost Add-On", posCode: "APEX-BOOST" },
+        { label: "30% Off Full Interior Detail", posCode: "APEX-INT30" },
+        { label: "$25 Off $100 Service", posCode: "APEX25-OFF" },
+        { label: "Free Headlight Restoration", posCode: "APEX-LIGHTS" }
+      ],
+      dudPrize: { label: "10% Off Hydrophobic Windshield Coating", posCode: "APEX10-GLASS" }
+    }
+  },
+
+  // 2. Food & Beverage
+  bistro: {
+    id: "bistro",
+    category: "Food & Beverage",
+    categoryKey: "food_beverage",
+    name: "The Copper Oak Bistro",
+    city: "Springfield",
+    industryLabel: "Artisan Bistro & Grill",
+    signatureItem: "Smoked Wagyu Flatiron",
+    voice: "Culinary-driven, warm, hospitable and unpretentious. Speaks like a chef passionate about local ingredients.",
+    menuHighlights: "Wood-fired steak, handmade pasta, seasonal farm crudo, craft cocktails",
+    backstory: "Farm-to-table neighborhood bistro celebrating locally sourced seasonal harvest.",
+    igHandle: "copperoakbistro",
+    orderUrl: "https://order.copperoakbistro.com",
+    masterPosCode: "BISTRO-SAVE25",
+    prizeBoard: {
+      goodPrizes: [
+        { label: "Free Signature Entree (BOGO)", posCode: "BISTRO-BOGO" },
+        { label: "25% Off Entire Bill", posCode: "BISTRO-25OFF" },
+        { label: "Free Chef Appetizer & Pairing", posCode: "BISTRO-APP" },
+        { label: "$10 Off Dinner for Two ($40+)", posCode: "BISTRO-10OFF" }
+      ],
+      dudPrize: { label: "10% Off Lunch Entree", posCode: "BISTRO-10PCT" }
+    }
+  },
+  bar: {
+    id: "bar",
+    category: "Food & Beverage",
+    categoryKey: "food_beverage",
+    name: "The Velvet Lounge & Cocktails",
+    city: "Springfield",
+    industryLabel: "Craft Bar & Lounge",
+    signatureItem: "Smoked Old Fashioned & Craft Flight",
+    voice: "Sophisticated, upbeat, nightlife hospitality with bespoke mixology flair.",
+    menuHighlights: "Signature smoked cocktails, artisanal tapas boards, rare bourbons, live jazz nights",
+    backstory: "A hidden gem cocktail parlor dedicated to the art of balanced libations and intimate conversation.",
+    igHandle: "thevelvetlounge",
+    orderUrl: "https://thevelvetlounge.com",
+    masterPosCode: "LOUNGE-VIP",
+    prizeBoard: {
+      goodPrizes: [
+        { label: "Free Signature Craft Cocktail", posCode: "LOUNGE-DRINK" },
+        { label: "Buy 1 Flight Get 1 50% Off", posCode: "LOUNGE-BOGO50" },
+        { label: "$15 Off Tapas & Charcuterie Board", posCode: "LOUNGE-BOARD" },
+        { label: "Free Truffle Fries with Any Drink", posCode: "LOUNGE-FRIES" }
+      ],
+      dudPrize: { label: "10% Off First Round", posCode: "LOUNGE-10PCT" }
+    }
+  },
+  bakery: {
+    id: "bakery",
+    category: "Food & Beverage",
+    categoryKey: "food_beverage",
+    name: "Golden Crust Artisan Bakery",
+    city: "Springfield",
+    industryLabel: "Bakery & Cafe",
+    signatureItem: "Sourdough Boule & Morning Pastry",
+    voice: "Cozy, aroma-rich, neighborhood warmth celebrating slow fermentation and hearth baking.",
+    menuHighlights: "Wild yeast sourdough, flaky butter croissants, cardamom buns, specialty pour-overs",
+    backstory: "Small-batch hearth bakery firing ovens before dawn with local stone-milled flours.",
+    igHandle: "goldencrustbakery",
+    orderUrl: "https://order.goldencrust.com",
+    masterPosCode: "BAKE-SURPRISE",
+    prizeBoard: {
+      goodPrizes: [
+        { label: "Free Fresh Sourdough Loaf", posCode: "BAKE-LOAF" },
+        { label: "Free Specialty Latte & Pastry", posCode: "BAKE-LATTE" },
+        { label: "25% Off Box of Pastries", posCode: "BAKE-25BOX" },
+        { label: "$5 Off $20 Morning Order", posCode: "BAKE-5OFF" }
+      ],
+      dudPrize: { label: "10% Off Next Coffee", posCode: "BAKE-10PCT" }
+    }
+  },
+
+  // 3. Specialty Retail & Health
+  boutique: {
+    id: "boutique",
+    category: "Specialty Retail & Health",
+    categoryKey: "specialty_retail",
+    name: "Haven & Thread Boutique",
+    city: "Springfield",
+    industryLabel: "Boutique & Fashion",
+    signatureItem: "Curated Autumn Capsule Collection",
+    voice: "Elevated, stylish, trendsetting and dedicated to personalized wardrobe styling.",
+    menuHighlights: "Designer apparel, sustainable denim, artisan jewelry, curated home goods",
+    backstory: "Curated boutique bringing independent designers and timeless wardrobe essentials to Springfield.",
+    igHandle: "haventhread",
+    orderUrl: "https://shop.haventhread.com",
+    masterPosCode: "BOUTIQUE-VIP",
+    prizeBoard: {
+      goodPrizes: [
+        { label: "$25 Off $100 Purchase", posCode: "BOUTIQUE-25OFF" },
+        { label: "30% Off Any Single Item", posCode: "BOUTIQUE-30PCT" },
+        { label: "Free Silk Scarf or Accessory", posCode: "BOUTIQUE-GIFT" },
+        { label: "Buy 1 Get 1 50% Off Denim", posCode: "BOUTIQUE-BOGO50" }
+      ],
+      dudPrize: { label: "10% Off Accessories", posCode: "BOUTIQUE-10ACC" }
+    }
+  },
+  gym: {
+    id: "gym",
+    category: "Specialty Retail & Health",
+    categoryKey: "specialty_retail",
+    name: "Pulse Performance Fitness",
+    city: "Springfield",
+    industryLabel: "Gym & Fitness Studio",
+    signatureItem: "30-Day Strength & Conditioning Trial",
+    voice: "High-energy, motivating, results-driven coaching for all athletic levels.",
+    menuHighlights: "HIIT classes, Olympic lifting bays, functional turf, body composition scans",
+    backstory: "Premier training facility focused on progressive strength, community culture, and sustainable longevity.",
+    igHandle: "pulsefitness",
+    orderUrl: "https://pulsefitness.com",
+    masterPosCode: "PULSE-FIT30",
+    prizeBoard: {
+      goodPrizes: [
+        { label: "Free 1-on-1 Personal Training Session", posCode: "PULSE-PTFREE" },
+        { label: "50% Off First Month Membership", posCode: "PULSE-50MEMB" },
+        { label: "Free Electrolyte & Protein Bundle", posCode: "PULSE-BUNDLE" },
+        { label: "$20 Off Pro Shop Gear", posCode: "PULSE-20GEAR" }
+      ],
+      dudPrize: { label: "Free Day Pass for a Friend", posCode: "PULSE-PASS" }
+    }
+  },
+  dental: {
+    id: "dental",
+    category: "Specialty Retail & Health",
+    categoryKey: "specialty_retail",
+    name: "Bright Smile Aesthetic Care",
+    city: "Springfield",
+    industryLabel: "Dental & Wellness",
+    signatureItem: "Professional Laser Whitening Session",
+    voice: "Reassuring, clinical excellence, friendly care in a soothing, spa-like practice.",
+    menuHighlights: "Laser teeth whitening, clear aligner consultations, preventive hygiene, digital smile design",
+    backstory: "Modern aesthetic dental boutique removing anxiety and creating confident, healthy smiles.",
+    igHandle: "brightsmiledental",
+    orderUrl: "https://brightsmiledental.com",
+    masterPosCode: "SMILE-GLOW",
+    prizeBoard: {
+      goodPrizes: [
+        { label: "50% Off In-Office Laser Whitening", posCode: "SMILE-WHITE50" },
+        { label: "Free Sonic Electric Brush Set", posCode: "SMILE-BRUSH" },
+        { label: "$50 Off Comprehensive Exam", posCode: "SMILE-50EXAM" },
+        { label: "Free Enamel & Fluoride Treatment", posCode: "SMILE-TREAT" }
+      ],
+      dudPrize: { label: "10% Off Take-Home Trays", posCode: "SMILE-10TRAY" }
+    }
+  }
 };
+
+const DEFAULT_BRAND_PROFILE = { ...BUSINESS_PRESETS.tattoo };
 
 const SHOOTING_PROMPTS = [
   {
     id: "ingredient-story",
-    title: "Ingredient Story",
-    prompt: "Pick up the most interesting ingredient in your kitchen right now and tell us where it comes from — farm, supplier, region, or family connection.",
-    guidance: "Hold the ingredient in frame. Lead with the name before any backstory. Keep it under 60 seconds."
+    title: "Ingredient & Craft Story",
+    prompt: "Show the most interesting material, tool, or ingredient in your workspace right now and explain its origin or craft significance.",
+    guidance: "Hold the item in frame. Lead with the item name before backstory. Keep it under 60 seconds."
   },
   {
     id: "operational-hustle",
-    title: "Operational Hustle",
-    prompt: "Walk us through one thing that happens before we open that customers never see — the prep, the ritual, the grind.",
-    guidance: "Film the actual action while you talk. Fast-moving hands read best on mobile."
+    title: "Behind-the-Scenes Prep",
+    prompt: "Walk through one ritual or prep step that happens before doors open that clients rarely see.",
+    guidance: "Film the hands-on action while talking. Fast-moving techniques read best on mobile."
   },
   {
     id: "behind-the-counter-secret",
-    title: "Behind-the-Counter Secret",
-    prompt: "Share one technique, ratio, or decision that makes your dish different — something a regular might never guess.",
-    guidance: "Be specific: a temperature, a time, a tool. Vague secrets get skipped."
+    title: "Pro Technique Secret",
+    prompt: "Share one technique, precision ratio, or skill decision that elevates your service quality above the average provider.",
+    guidance: "Be specific: a temperature, an angle, a pressure, a tool. Actionable details get saved & shared."
   },
   {
     id: "community-gratitude",
-    title: "Community Gratitude",
-    prompt: "Thank a specific corner of your community — a supplier, a neighboring business, or the regulars who kept you open.",
-    guidance: "Name the person or business. Generic 'thanks everyone' posts underperform by 40% vs named shout-outs."
+    title: "Client & Community Spotlight",
+    prompt: "Shout out a specific regular client, neighboring local business, or collaborator who inspires your craft.",
+    guidance: "Name the person or business directly. Named shout-outs build 40% stronger local retention."
   },
   {
     id: "demographic-pivot",
-    title: "Demographic Pivot",
-    prompt: "Describe one way you adapted a menu item or your hours to better serve a group in your neighborhood that others overlook.",
-    guidance: "Lead with the community, then the change. Avoid generalizations — be hyper-local."
-  },
-  {
-    id: "menu-focus",
-    title: "Menu Focus",
-    prompt: "Pick your single best-seller this week and explain — in one sentence — why a first-time guest should order it.",
-    guidance: "Say the item name in the first three seconds. Sell the outcome, not the process."
-  },
-  {
-    id: "staff-spotlight",
-    title: "Staff Spotlight",
-    prompt: "Introduce one team member: their name, how long they've been here, and one thing they do better than anyone else.",
-    guidance: "Get the team member on camera. Authenticity beats polish — a candid laugh outperforms a rehearsed line."
-  },
-  {
-    id: "honest-entrepreneur",
-    title: "Honest Entrepreneur",
-    prompt: "Share one genuine challenge you faced this month — a supplier issue, a slow week, a lesson learned — and how you moved through it.",
-    guidance: "Vulnerability is the hook. Let the struggle breathe for at least ten seconds."
+    title: "Customized Service Solution",
+    prompt: "Describe one way you tailored your service or booking hours to better serve a specific client group in your city.",
+    guidance: "Lead with the customer need, then explain the solution."
   }
 ];
 
-const DEFAULT_PRIZE_BOARD = {
-  goodPrizes: [
-    { label: "Free Sub (BOGO)", posCode: "BOGO-SUB" },
-    { label: "30% Off Your Order", posCode: "SAVE30" },
-    { label: "Free Side & Drink", posCode: "FREE-SIDE" },
-    { label: "20% Off Your Order", posCode: "SAVE20" }
-  ],
-  dudPrize: { label: "10% Off Your Order", posCode: "SAVE10" }
-};
+const DEFAULT_PRIZE_BOARD = { ...DEFAULT_BRAND_PROFILE.prizeBoard };
 
 const INDUSTRY_PACING = {
   restaurant: {
@@ -170,12 +382,26 @@ const state = {
   industries: JSON.parse(JSON.stringify(DEFAULT_INDUSTRIES)),
   game_settings: { playFrequencyDays: 7, codeExpiryDays: 7, enabled: true },
   game_override: null,
+  campaign_cadence: {
+    mode: "sprint", // "sprint" | "rest_nurture"
+    sprintDurationDays: 7,
+    sprintStartedAt: new Date(Date.now() - 2 * 86400000).toISOString(),
+    sprintExpiresAt: new Date(Date.now() + 5 * 86400000).toISOString(),
+    rotationGame: "spin_wheel",
+    advisoryNotice: "Promotional Alert: High-frequency gamification degrades luxury/service brand trust. Best Practice: 1 week active per month, rotating game styles (Spin Wheel -> Scratch -> Mystery Box).",
+    restSchedule: [
+      { week: 1, name: "Week 1: Active 7-Day Sprint", status: "active", mode: "sprint", game: "Lucky Spin Wheel", advice: "Drive concentrated bursts of high-intent customer bookings." },
+      { week: 2, name: "Week 2: Rest & Nurture Mode", status: "upcoming", mode: "rest_nurture", game: "None (Full-Price Focus)", advice: "Nurture new leads with welcome stories and protect premium service margins." },
+      { week: 3, name: "Week 3: Rest & Nurture Mode", status: "upcoming", mode: "rest_nurture", game: "None (Full-Price Focus)", advice: "Client satisfaction follow-ups and organic Google/Meta review gathering." },
+      { week: 4, name: "Week 4: Rotation Prep", status: "upcoming", mode: "rest_nurture", game: "Scratch & Win (Next)", advice: "Warm up audience for next month's fresh game mechanic rotation." }
+    ]
+  },
   team_settings: { access_code: "TR-7K9P-4M2X", code_version: 1 },
   users: [
     {
       user_id: "usr_owner_01",
-      email: "owner@nonnascorner.com",
-      name: "Marco Rossi (Owner)",
+      email: "owner@ironandneedle.com",
+      name: "Leo Vance (Owner / Lead Artist)",
       picture: "",
       role: "owner",
       status: "active"
@@ -191,16 +417,16 @@ const state = {
       couponRatio: 0.25,
       segment: "loyal",
       source: "spin_signup",
-      signupSpace: "Table Tent #3",
+      signupSpace: "Front Mirror QR",
       createdAt: new Date(Date.now() - 25 * 86400000).toISOString(),
       lastSpinAt: new Date(Date.now() - 2 * 86400000).toISOString(),
       lastRedeemedAt: new Date(Date.now() - 2 * 86400000).toISOString()
     },
     {
-      memberKey: "tony.soprano@example.com",
-      email: "tony.soprano@example.com",
+      memberKey: "marcus.k@example.com",
+      email: "marcus.k@example.com",
       phone: "555-0144",
-      name: "Tony S.",
+      name: "Marcus King",
       visits: 14,
       couponRatio: 0.14,
       segment: "loyal",
@@ -228,39 +454,61 @@ const state = {
   redemptions: [
     {
       id: "rd_101",
-      code: "HV-7K9A2M",
-      tier: "highValue",
-      reward: "Free Sub (BOGO)",
-      posCode: "BOGO-SUB",
+      code: "OL-TAT-784X",
+      masterPosCode: "TAT50-PROMO",
+      tier: "Grand Prize",
+      reward: "50% Off 3-Hr Tattoo Session",
+      posCode: "TAT50-PROMO",
       segment: "vip",
       guestType: "repeat",
       gameId: "spin_wheel",
       gameName: "Lucky Spin Wheel",
-      spaceId: "Table Tent #3",
+      spaceId: "Front Mirror QR",
       status: "redeemed",
       memberKey: "gianna.m@example.com",
       memberEmail: "gianna.m@example.com",
       issuedAt: new Date(Date.now() - 2 * 86400000).toISOString(),
       expiresAt: new Date(Date.now() + 5 * 86400000).toISOString(),
       redeemedAt: new Date(Date.now() - 1 * 86400000).toISOString(),
-      netSales: 34.50
+      netSales: 175.00
     },
     {
       id: "rd_102",
-      code: "ST-88M2K1",
-      tier: "standard",
-      reward: "20% Off Your Order",
-      posCode: "SAVE20",
-      segment: "standard",
+      code: "OL-TAT-339K",
+      masterPosCode: "TAT25-OFF",
+      tier: "High Value",
+      reward: "$25 Off $100 Service",
+      posCode: "TAT25-OFF",
+      segment: "loyal",
       guestType: "repeat",
       gameId: "spin_wheel",
       gameName: "Lucky Spin Wheel",
       spaceId: "Register #1",
+      status: "redeemed",
+      memberKey: "marcus.k@example.com",
+      memberEmail: "marcus.k@example.com",
+      issuedAt: new Date(Date.now() - 3 * 86400000).toISOString(),
+      expiresAt: new Date(Date.now() + 4 * 86400000).toISOString(),
+      redeemedAt: new Date(Date.now() - 2 * 86400000).toISOString(),
+      netSales: 120.00
+    },
+    {
+      id: "rd_103",
+      code: "OL-TAT-912M",
+      masterPosCode: "TAT-AFTERCARE",
+      tier: "Daily Win",
+      reward: "Free Aftercare Kit & Touchup",
+      posCode: "TAT-AFTERCARE",
+      segment: "new",
+      guestType: "new",
+      gameId: "spin_wheel",
+      gameName: "Lucky Spin Wheel",
+      spaceId: "Studio Window Decal",
       status: "issued",
-      memberKey: "tony.soprano@example.com",
-      memberEmail: "tony.soprano@example.com",
-      issuedAt: new Date(Date.now() - 1 * 86400000).toISOString(),
-      expiresAt: new Date(Date.now() + 6 * 86400000).toISOString(),
+      memberKey: "newguest@example.com",
+      memberEmail: "newguest@example.com",
+      issuedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 7 * 86400000).toISOString(),
       redeemedAt: null,
       netSales: null
     }
@@ -350,6 +598,127 @@ const state = {
 const sessions = new Map();
 // Seed an initial owner session
 const defaultOwner = state.users[0];
+
+// ---------------------------------------------------------------------------
+// MULTI-SOURCE ATTRIBUTION HUB & LONGITUDINAL LEARNING ENGINE STATE
+// ---------------------------------------------------------------------------
+state.attribution_sources = {
+  meta: [
+    { campaignId: "META-CRAFT-REELS-01", campaignName: "Craft & Detail Reels", clicks: 1240, ctr: 3.42, cpc: 0.65, spend: 806.00, impressions: 36250, dateRange: "Aug 1 - Aug 15" },
+    { campaignId: "META-FLASH-BURST-02", campaignName: "Flash Drop Weekend", clicks: 680, ctr: 4.10, cpc: 0.52, spend: 353.60, impressions: 16580, dateRange: "Aug 8 - Aug 10" }
+  ],
+  tiktok: [
+    { campaignId: "TT-BTS-PREP-01", videoTitle: "Needle Precision 60s Reel", videoViews: 48500, watchTimePct: 62.4, profileClicks: 1420, spend: 420.00, cpc: 0.30, dateRange: "Aug 1 - Aug 15" },
+    { campaignId: "TT-HEALED-WORK-02", videoTitle: "30-Day Healed Client Results", videoViews: 31200, watchTimePct: 54.1, profileClicks: 890, spend: 280.00, cpc: 0.31, dateRange: "Aug 5 - Aug 12" }
+  ],
+  gbp: [
+    { locationId: "LOC-DOWNTOWN", localActions: 1840, calls: 94, directionRequests: 312, websiteClicks: 860, profileViews: 9420, dateRange: "Aug 1 - Aug 15" }
+  ],
+  pos: [
+    { code: "TAT50-PROMO", tokensRedeemed: 38, grossBasketTotal: 6650.00, netAttributedRevenue: 5240.00, avgTicket: 175.00 },
+    { code: "TAT25-OFF", tokensRedeemed: 44, grossBasketTotal: 5280.00, netAttributedRevenue: 4180.00, avgTicket: 120.00 },
+    { code: "TAT-AFTERCARE", tokensRedeemed: 29, grossBasketTotal: 2900.00, netAttributedRevenue: 2465.00, avgTicket: 100.00 },
+    { code: "TAT-FLASH20", tokensRedeemed: 18, grossBasketTotal: 2520.00, netAttributedRevenue: 2016.00, avgTicket: 140.00 }
+  ]
+};
+
+state.longitudinal_knowledge = {
+  maturityLevel: "Month 3: Pattern Matched",
+  confidenceScore: 68,
+  maturityStage: 2,
+  monthsAccumulated: 3.4,
+  totalDataPointsLearned: 2480,
+  cumulativeAttributedRevenue: 42850.00,
+  switchingMoatScore: 92,
+  timeHorizons: {
+    d30: { blendedRoas: 6.84, costPerWalkin: 18.40, grossMarginPct: 71.2, topDay: "Thursday 6-9pm & Friday Mornings", topCreative: "Behind-the-Scenes Craft Realism" },
+    d90: { blendedRoas: 7.42, costPerWalkin: 15.80, grossMarginPct: 69.5, topDay: "Friday & Saturday Drops", topCreative: "Artisan Technique & Zero-Fluff BTS" },
+    d180: { blendedRoas: 8.15, costPerWalkin: 13.20, grossMarginPct: 73.0, topDay: "Thursday Flash Announcements", topCreative: "Client Transformations & Craft Story" }
+  },
+  businessMastery: {
+    winningHooks: [
+      { hook: "Behind-the-Scenes Sterile Craft & Technique", roas: "7.8x", baselineRoas: "2.1x", lift: "+271%", format: "Vertical Video 9:16" },
+      { hook: "Healed Real-World Client Work (No Filters)", roas: "6.9x", baselineRoas: "2.4x", lift: "+187%", format: "Carousel & Video" },
+      { hook: "Master Artist 1-on-1 Consultation Ritual", roas: "5.4x", baselineRoas: "2.0x", lift: "+170%", format: "Reel / Shorts" }
+    ],
+    gameRankings: [
+      { style: "Scratch & Win", redemptionRate: "42.8%", conversionLift: "+42%", marginImpact: "Safe ($25 off $100+)", recommendation: "Optimal for mid-week flash drops" },
+      { style: "Lucky Spin Wheel", redemptionRate: "36.2%", conversionLift: "+28%", marginImpact: "High engagement, moderate margin", recommendation: "Ideal for 7-day monthly sprint" },
+      { style: "Vault Mystery Box", redemptionRate: "29.4%", conversionLift: "+19%", marginImpact: "Very high margin protection", recommendation: "Best for high-ticket VIP services" }
+    ],
+    marginThresholds: {
+      maxDiscountCeiling: 30,
+      minimumSpendReq: 50,
+      targetGrossMarginFloor: 65,
+      optimalSweetSpot: "$25 off $100 service (preserves 75% gross margin while delivering 91% conversion)"
+    },
+    peakConversionWindows: [
+      { window: "Thursday 6:00 PM – 9:00 PM", lift: "3.4x weekend appointment booking rate" },
+      { window: "Friday 9:00 AM – 11:30 AM", lift: "2.8x flash walk-in demand" },
+      { window: "Sunday 7:00 PM – 10:00 PM", lift: "2.1x mid-week appointment filling" }
+    ]
+  },
+  autonomousInsights: [
+    { id: "ins_1", date: "Aug 14, 2026", type: "creative", text: "Short-form craft reels generate 3.2x more booked appointments than static discount ads. Allocating 65% of media budget to craft storytelling." },
+    { id: "ins_2", date: "Aug 10, 2026", type: "margin", text: "BOGO offers caused a 6% margin compression. Automatically recalibrated prize board to '$25 off $100 minimum spend' to lock 70%+ gross margin floor." },
+    { id: "ins_3", date: "Aug 06, 2026", type: "cadence", text: "Anti-Fatigue Guardrail: Detected 8 consecutive promo days. Co-Captain triggered 2-week Rest & Nurture mode to preserve luxury service pricing power." }
+  ]
+};
+
+state.campaign_tracks = [
+  {
+    id: "track_a",
+    key: "video_reels",
+    name: "Track A: Short-Form Video & Craft Reels",
+    subtitle: "Storytelling, Master Craftsmanship & Behind-the-Scenes",
+    mechanic: "ZERO Game Mechanics · Pure Prestige & Direct Booking CTA",
+    spendShare: 45,
+    weeklySpend: 134.55,
+    status: "active",
+    kpis: { views: 79700, profileClicks: 2310, roas: "6.9x", directBookings: 52 },
+    cadenceRule: "Continuous Evergreen Pulse · Always-On Brand Foundation",
+    recentCreative: "Master Artist 60-Second Sterile Protocol & Realism Technique"
+  },
+  {
+    id: "track_b",
+    key: "arcade_sprints",
+    name: "Track B: Static / Outreach Arcade Sprints",
+    subtitle: "7-Day Interactive Gamified Acquisition Burst",
+    mechanic: "Spin Wheel / Scratch & Win · Issues Single-Use Tamper-Proof POS Tokens",
+    spendShare: 30,
+    weeklySpend: 89.70,
+    status: "active",
+    kpis: { plays: 480, tokensIssued: 480, redeemed: 129, netRevenue: "$13,901.00", roas: "8.2x" },
+    cadenceRule: "7-Day Active Pulse -> Followed by 2-3 Weeks Rest & Nurture",
+    recentCreative: "Lucky Spin Station · $25 Off $100 Flash Claim"
+  },
+  {
+    id: "track_c",
+    key: "win_back_drip",
+    name: "Track C: Win-Back & Retargeting Drip",
+    subtitle: "Targeted VIP SMS & Email Nurture Sequences",
+    mechanic: "Direct 1-on-1 Nurture · Single-Use Serialized VIP Perks",
+    spendShare: 15,
+    weeklySpend: 44.85,
+    status: "active",
+    kpis: { sent: 1420, openRate: "64.2%", clickRate: "28.5%", winBacks: 38 },
+    cadenceRule: "Triggered Drip · 0-3-7-14 Day Staggered Delivery",
+    recentCreative: "VIP Anniversary Invite & Exclusive Private Slot"
+  },
+  {
+    id: "track_d",
+    key: "local_search_intent",
+    name: "Track D: Local Search & Maps Intent",
+    subtitle: "Google Business Profile & High-Intent Maps Geo-Pinning",
+    mechanic: "Frictionless Direct Contact Routing · Radius 3-Mile Geo-Pin",
+    spendShare: 10,
+    weeklySpend: 29.90,
+    status: "active",
+    kpis: { mapImpressions: 9420, directionRequests: 312, directCalls: 94, booked: 41 },
+    cadenceRule: "Always-On High-Intent Capture",
+    recentCreative: "Verified Studio Profile & Live 5-Star Walk-In Pin"
+  }
+];
 sessions.set("tok_owner_default", { userId: defaultOwner.user_id, expires: Date.now() + 30 * 86400000 });
 
 // Helper to get user from request
@@ -602,6 +971,173 @@ app.get('/api/content/prompts', (req, res) => {
       { index: 0, label: "Good: Sunday Gravy Sub Dinner Rush" },
       { index: 1, label: "Needs Fix: Backlit Owner Intro" }
     ]
+  });
+});
+
+app.get('/api/content/presets', (req, res) => {
+  const categories = [
+    {
+      key: "appointment_service",
+      label: "Appointment / Service",
+      description: "Tattoo Studio, Day Spa & Wellness, Salon & Barber, Auto Detailing",
+      presets: [BUSINESS_PRESETS.tattoo, BUSINESS_PRESETS.spa, BUSINESS_PRESETS.salon, BUSINESS_PRESETS.auto_detail]
+    },
+    {
+      key: "food_beverage",
+      label: "Food & Beverage",
+      description: "Artisan Bistro, Craft Cocktail Bar & Lounge, Hearth Bakery & Cafe",
+      presets: [BUSINESS_PRESETS.bistro, BUSINESS_PRESETS.bar, BUSINESS_PRESETS.bakery]
+    },
+    {
+      key: "specialty_retail",
+      label: "Specialty Retail & Health",
+      description: "Curated Fashion Boutique, Gym & Fitness Studio, Aesthetic Dental Care",
+      presets: [BUSINESS_PRESETS.boutique, BUSINESS_PRESETS.gym, BUSINESS_PRESETS.dental]
+    }
+  ];
+  res.json({
+    presets: BUSINESS_PRESETS,
+    categories,
+    activePresetId: state.brand_profile.id || "tattoo"
+  });
+});
+
+app.post('/api/content/presets/apply', (req, res) => {
+  const { presetId } = req.body || {};
+  const preset = BUSINESS_PRESETS[presetId];
+  if (!preset) {
+    return res.status(404).json({ detail: `Preset ${presetId} not found.` });
+  }
+  state.brand_profile = {
+    ...preset
+  };
+  if (preset.prizeBoard) {
+    state.prize_board = JSON.parse(JSON.stringify(preset.prizeBoard));
+  }
+  // Generate sample redemption records matching new industry
+  const pList = state.prize_board.goodPrizes || [];
+  const p1 = pList[0] || { label: "50% Off Service", posCode: "SRV-50" };
+  const p2 = pList[1] || { label: "$25 Off $100 Service", posCode: "SRV-25" };
+  const p3 = pList[2] || { label: "Free Add-On Service", posCode: "SRV-ADD" };
+  const pfx = (preset.id || "SRV").substring(0, 3).toUpperCase();
+  
+  state.redemptions = [
+    {
+      id: `rd_${Date.now()}_1`,
+      code: `OL-${pfx}-784X`,
+      masterPosCode: p1.posCode,
+      tier: "Grand Prize",
+      reward: p1.label,
+      posCode: p1.posCode,
+      segment: "vip",
+      guestType: "repeat",
+      gameId: "spin_wheel",
+      gameName: "Lucky Spin Wheel",
+      spaceId: "Front Mirror / Reception QR",
+      status: "redeemed",
+      memberKey: "gianna.m@example.com",
+      memberEmail: "gianna.m@example.com",
+      issuedAt: new Date(Date.now() - 2 * 86400000).toISOString(),
+      expiresAt: new Date(Date.now() + 5 * 86400000).toISOString(),
+      redeemedAt: new Date(Date.now() - 1 * 86400000).toISOString(),
+      netSales: 150.00
+    },
+    {
+      id: `rd_${Date.now()}_2`,
+      code: `OL-${pfx}-339K`,
+      masterPosCode: p2.posCode,
+      tier: "High Value",
+      reward: p2.label,
+      posCode: p2.posCode,
+      segment: "loyal",
+      guestType: "repeat",
+      gameId: "spin_wheel",
+      gameName: "Lucky Spin Wheel",
+      spaceId: "Register / Desk #1",
+      status: "redeemed",
+      memberKey: "marcus.k@example.com",
+      memberEmail: "marcus.k@example.com",
+      issuedAt: new Date(Date.now() - 3 * 86400000).toISOString(),
+      expiresAt: new Date(Date.now() + 4 * 86400000).toISOString(),
+      redeemedAt: new Date(Date.now() - 2 * 86400000).toISOString(),
+      netSales: 110.00
+    },
+    {
+      id: `rd_${Date.now()}_3`,
+      code: `OL-${pfx}-912M`,
+      masterPosCode: p3.posCode,
+      tier: "Daily Win",
+      reward: p3.label,
+      posCode: p3.posCode,
+      segment: "new",
+      guestType: "new",
+      gameId: "spin_wheel",
+      gameName: "Lucky Spin Wheel",
+      spaceId: "Window / Entrance QR",
+      status: "issued",
+      memberKey: "newguest@example.com",
+      memberEmail: "newguest@example.com",
+      issuedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 7 * 86400000).toISOString(),
+      redeemedAt: null,
+      netSales: null
+    }
+  ];
+
+  res.json({
+    status: "ok",
+    brand_profile: state.brand_profile,
+    prize_board: state.prize_board
+  });
+});
+
+// Campaign Cadence & Anti-Fatigue Controls
+app.get('/api/campaign/cadence', (req, res) => {
+  res.json(state.campaign_cadence);
+});
+
+app.post('/api/campaign/cadence/sprint', (req, res) => {
+  const duration = Number(req.body?.days || 7);
+  state.campaign_cadence = {
+    ...state.campaign_cadence,
+    mode: "sprint",
+    sprintDurationDays: duration,
+    sprintStartedAt: new Date().toISOString(),
+    sprintExpiresAt: new Date(Date.now() + duration * 86400000).toISOString(),
+    restSchedule: [
+      { week: 1, name: "Week 1: Active 7-Day Sprint", status: "active", mode: "sprint", game: "Lucky Spin Wheel", advice: "Drive concentrated bursts of high-intent customer bookings." },
+      { week: 2, name: "Week 2: Rest & Nurture Mode", status: "upcoming", mode: "rest_nurture", game: "None (Full-Price Focus)", advice: "Nurture new leads with welcome stories and protect premium service margins." },
+      { week: 3, name: "Week 3: Rest & Nurture Mode", status: "upcoming", mode: "rest_nurture", game: "None (Full-Price Focus)", advice: "Client satisfaction follow-ups and organic Google/Meta review gathering." },
+      { week: 4, name: "Week 4: Rotation Prep", status: "upcoming", mode: "rest_nurture", game: "Scratch & Win (Next)", advice: "Warm up audience for next month's fresh game mechanic rotation." }
+    ]
+  };
+  res.json({ status: "ok", cadence: state.campaign_cadence });
+});
+
+app.post('/api/campaign/cadence/rest', (req, res) => {
+  state.campaign_cadence = {
+    ...state.campaign_cadence,
+    mode: "rest_nurture",
+    restSchedule: [
+      { week: 1, name: "Week 1: Rest & Nurture Mode", status: "active", mode: "rest_nurture", game: "None (Full-Price Protection)", advice: "Preserve margin integrity, cultivate organic word-of-mouth." },
+      { week: 2, name: "Week 2: Rest & Nurture Mode", status: "upcoming", mode: "rest_nurture", game: "None (Full-Price Protection)", advice: "Nurture new leads with craft stories." },
+      { week: 3, name: "Week 3: Rotation Prep", status: "upcoming", mode: "rest_nurture", game: "Scratch & Win Prep", advice: "Prepare seasonal flash asset drop." },
+      { week: 4, name: "Week 4: 7-Day Sprint Drop", status: "upcoming", mode: "sprint", game: "Scratch & Win", advice: "Run 7-day concentrated burst." }
+    ]
+  };
+  res.json({ status: "ok", cadence: state.campaign_cadence });
+});
+
+app.post('/api/campaign/cadence/margin-floor', (req, res) => {
+  const { maxDiscountPct, minSpendReq } = req.body || {};
+  if (state.game_settings) {
+    state.game_settings.maxDiscountPct = maxDiscountPct || 30;
+    state.game_settings.minSpendReq = minSpendReq || 50;
+  }
+  res.json({
+    status: "ok",
+    message: `Margin Floor Tuned: Max discount capped at ${maxDiscountPct || 30}%, minimum spend requirement set to $${minSpendReq || 50}.`,
+    settings: state.game_settings
   });
 });
 
@@ -1625,45 +2161,57 @@ app.delete('/api/google-business/connection', (req, res) => {
   res.json({ status: "ok", connected: false });
 });
 
-// Codes
+// Codes & Dual-Mode Voucher Engine
 app.get('/api/codes/current', (req, res) => {
   const now = new Date();
   const nextWeek = new Date(Date.now() + 7 * 86400000);
+  const bp = state.brand_profile;
+  const pfx = (bp.id || "SRV").substring(0, 3).toUpperCase();
+  const masterCode = bp.masterPosCode || `${pfx}50-PROMO`;
+  const pList = state.prize_board?.goodPrizes || [];
+
   res.json({
     weekOf: now.toISOString().slice(0, 10),
     expiresAt: nextWeek.toISOString().slice(0, 10),
     length: 8,
     totalCodes: 24,
+    businessName: bp.name,
+    category: bp.category,
+    masterPosCode: masterCode,
     tiers: [
       {
         tier: "grand",
-        reward: "Free Dinner for Two ($50 Value)",
+        reward: pList[0]?.label || "50% Off 3-Hr Session",
+        masterPosCode: pList[0]?.posCode || masterCode,
         probability: 0.05,
-        codes: ["GR-9K2A", "GR-7X8B", "GR-4M1P"]
+        codes: [`OL-${pfx}-784X`, `OL-${pfx}-992A`, `OL-${pfx}-441B`]
       },
       {
         tier: "high",
-        reward: "Free Sunday Gravy Sub with Entree",
+        reward: pList[1]?.label || "$25 Off $100 Service",
+        masterPosCode: pList[1]?.posCode || `${pfx}25-OFF`,
         probability: 0.20,
-        codes: ["HV-8L3X", "HV-5P9Q", "HV-2W4K", "HV-6M7N"]
+        codes: [`OL-${pfx}-339K`, `OL-${pfx}-815Q`, `OL-${pfx}-204W`, `OL-${pfx}-671M`]
       },
       {
         tier: "mid",
-        reward: "Free Cannoli or Beverage with $15+ Order",
+        reward: pList[2]?.label || "Free Add-On Service",
+        masterPosCode: pList[2]?.posCode || `${pfx}-ADDON`,
         probability: 0.40,
-        codes: ["MD-3X8P", "MD-9K1L", "MD-4R7T", "MD-5W2V"]
+        codes: [`OL-${pfx}-912M`, `OL-${pfx}-118L`, `OL-${pfx}-473T`, `OL-${pfx}-582V`]
       },
       {
         tier: "low",
-        reward: "$3 Off Any Lunch Special",
+        reward: state.prize_board?.dudPrize?.label || "10% Off Next Booking",
+        masterPosCode: state.prize_board?.dudPrize?.posCode || `${pfx}10-SAVE`,
         probability: 0.35,
-        codes: ["LW-1A9Z", "LW-8B4X", "LW-7C2V", "LW-3D5N"]
+        codes: [`OL-${pfx}-109Z`, `OL-${pfx}-843X`, `OL-${pfx}-721V`, `OL-${pfx}-354N`]
       }
     ],
     batch: [
-      { code: "STRATA-101", strategy: "Paid Local Velocity", channel: "Facebook Act-Now" },
-      { code: "STRATA-102", strategy: "Paid Local Velocity", channel: "Google Maps Pin" },
-      { code: "STRATB-201", strategy: "Organic Community Outreach", channel: "GBP Organic" }
+      { code: `OL-${pfx}-784X`, masterPosCode: masterCode, strategy: "Paid Local Velocity", channel: "Meta Act-Now Ads" },
+      { code: `OL-${pfx}-339K`, masterPosCode: `${pfx}25-OFF`, strategy: "Paid Local Velocity", channel: "Google Maps Pin" },
+      { code: `OL-${pfx}-912M`, masterPosCode: `${pfx}-ADDON`, strategy: "Organic Community Outreach", channel: "GBP Organic & QR" }
     ]
   });
 });
@@ -1672,7 +2220,12 @@ app.post('/api/codes/generate', (req, res) => {
   const len = Number(req.body?.length || 8);
   const now = new Date();
   const nextWeek = new Date(Date.now() + 7 * 86400000);
-  const randHex = () => Math.random().toString(36).substring(2, 6).toUpperCase();
+  const bp = state.brand_profile;
+  const pfx = (bp.id || "SRV").substring(0, 3).toUpperCase();
+  const masterCode = req.body?.masterPosCode || bp.masterPosCode || `${pfx}50-PROMO`;
+  const randAlnum = () => Math.random().toString(36).substring(2, 6).toUpperCase();
+  const pList = state.prize_board?.goodPrizes || [];
+
   res.json({
     status: "ok",
     batchCount: 24,
@@ -1680,37 +2233,508 @@ app.post('/api/codes/generate', (req, res) => {
     expiresAt: nextWeek.toISOString().slice(0, 10),
     length: len,
     totalCodes: 24,
+    masterPosCode: masterCode,
     tiers: [
-      { tier: "grand", reward: "Free Dinner for Two ($50 Value)", probability: 0.05, codes: [`GR-${randHex()}`, `GR-${randHex()}`] },
-      { tier: "high", reward: "Free Sunday Gravy Sub with Entree", probability: 0.20, codes: [`HV-${randHex()}`, `HV-${randHex()}`, `HV-${randHex()}`] },
-      { tier: "mid", reward: "Free Cannoli or Beverage with $15+ Order", probability: 0.40, codes: [`MD-${randHex()}`, `MD-${randHex()}`, `MD-${randHex()}`] },
-      { tier: "low", reward: "$3 Off Any Lunch Special", probability: 0.35, codes: [`LW-${randHex()}`, `LW-${randHex()}`, `LW-${randHex()}`] }
+      { tier: "grand", reward: pList[0]?.label || "50% Off Session", masterPosCode: pList[0]?.posCode || masterCode, probability: 0.05, codes: [`OL-${pfx}-${randAlnum()}`, `OL-${pfx}-${randAlnum()}`] },
+      { tier: "high", reward: pList[1]?.label || "$25 Off $100 Service", masterPosCode: pList[1]?.posCode || `${pfx}25-OFF`, probability: 0.20, codes: [`OL-${pfx}-${randAlnum()}`, `OL-${pfx}-${randAlnum()}`, `OL-${pfx}-${randAlnum()}`] },
+      { tier: "mid", reward: pList[2]?.label || "Free Add-On Service", masterPosCode: pList[2]?.posCode || `${pfx}-ADDON`, probability: 0.40, codes: [`OL-${pfx}-${randAlnum()}`, `OL-${pfx}-${randAlnum()}`, `OL-${pfx}-${randAlnum()}`] },
+      { tier: "low", reward: state.prize_board?.dudPrize?.label || "10% Off Next Booking", masterPosCode: state.prize_board?.dudPrize?.posCode || `${pfx}10-SAVE`, probability: 0.35, codes: [`OL-${pfx}-${randAlnum()}`, `OL-${pfx}-${randAlnum()}`, `OL-${pfx}-${randAlnum()}`] }
     ],
     batch: [
-      { code: "STRATA-101", strategy: "Paid Local Velocity", channel: "Facebook Act-Now" },
-      { code: "STRATB-201", strategy: "Organic Community Outreach", channel: "GBP Organic" }
+      { code: `OL-${pfx}-${randAlnum()}`, masterPosCode: masterCode, strategy: "Paid Local Velocity", channel: "Meta Act-Now Ads" },
+      { code: `OL-${pfx}-${randAlnum()}`, masterPosCode: `${pfx}25-OFF`, strategy: "Organic Community Outreach", channel: "GBP Organic" }
     ]
   });
 });
 
+// Staff Voucher Lookup Screen (1-Click Mark Redeemed)
+app.get('/api/codes/voucher-lookup', (req, res) => {
+  const query = (req.query.q || "").trim().toLowerCase();
+  let results = state.redemptions;
+  if (query) {
+    results = state.redemptions.filter(r =>
+      (r.code && r.code.toLowerCase().includes(query)) ||
+      (r.masterPosCode && r.masterPosCode.toLowerCase().includes(query)) ||
+      (r.memberEmail && r.memberEmail.toLowerCase().includes(query)) ||
+      (r.reward && r.reward.toLowerCase().includes(query))
+    );
+  }
+  res.json({
+    query,
+    total: results.length,
+    vouchers: results
+  });
+});
+
+app.post('/api/codes/redeem-voucher', (req, res) => {
+  const { code, netSales, staffNote } = req.body || {};
+  const cleanedCode = (code || "").trim().toUpperCase();
+  const redemption = state.redemptions.find(r => (r.code && r.code.toUpperCase() === cleanedCode) || (r.id === code));
+  
+  if (!redemption) {
+    return res.status(404).json({ detail: `Voucher code '${code}' not found in active ledger.` });
+  }
+  if (redemption.status === 'redeemed') {
+    return res.status(400).json({ detail: `Voucher '${redemption.code}' was already redeemed on ${new Date(redemption.redeemedAt).toLocaleString()}.` });
+  }
+
+  redemption.status = 'redeemed';
+  redemption.redeemedAt = new Date().toISOString();
+  redemption.netSales = netSales ? Number(netSales) : 85.00;
+  if (staffNote) redemption.staffNote = staffNote;
+
+  res.json({
+    status: "ok",
+    message: `Voucher ${redemption.code} verified & locked. Attributed net sales: $${redemption.netSales.toFixed(2)}`,
+    redemption
+  });
+});
+
+app.get('/api/codes/export.csv', (req, res) => {
+  const bp = state.brand_profile;
+  let csv = "claim_code,master_pos_code,reward_title,tier,status,issued_at,expires_at,redeemed_at,net_sales\n";
+  for (const r of state.redemptions) {
+    csv += `"${r.code || ''}","${r.masterPosCode || r.posCode || ''}","${r.reward || ''}","${r.tier || ''}","${r.status || 'issued'}","${r.issuedAt || ''}","${r.expiresAt || ''}","${r.redeemedAt || ''}","${r.netSales || ''}"\n`;
+  }
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', `attachment; filename="${bp.id || 'omnilocal'}-claim-codes.csv"`);
+  res.send(csv);
+});
+
 app.get('/api/codes/sample-csv', (req, res) => {
   res.setHeader('Content-Type', 'text/csv');
-  res.send("promo_code,net_sales\nHV-8L3X,34.50\nMD-3X8P,22.00\nLW-1A9Z,18.50\n");
+  res.send("promo_code,net_sales\nOL-TAT-784X,150.00\nOL-TAT-339K,110.00\nOL-TAT-912M,85.00\n");
 });
 
 app.post('/api/codes/reconcile', (req, res) => {
   const { csv } = req.body || {};
+  const redeemed = state.redemptions.filter(r => r.status === 'redeemed');
   res.json({
     status: "ok",
-    issued: 24,
-    redeemed: 18,
-    redemptionRate: 0.75,
-    revenue: 842.50,
-    rows: [
-      { code: "HV-8L3X", reward: "Free Sunday Gravy Sub with Entree", net_sales: 34.50, valid: true },
-      { code: "MD-3X8P", reward: "Free Cannoli or Beverage", net_sales: 22.00, valid: true },
-      { code: "LW-1A9Z", reward: "$3 Off Any Lunch Special", net_sales: 18.50, valid: true }
+    issued: state.redemptions.length,
+    redeemed: redeemed.length,
+    redemptionRate: state.redemptions.length ? Math.round((redeemed.length / state.redemptions.length) * 100) / 100 : 0.75,
+    revenue: redeemed.reduce((s, r) => s + (r.netSales || 0), 0) || 842.50,
+    rows: state.redemptions.slice(0, 5).map(r => ({
+      code: r.code,
+      masterPosCode: r.masterPosCode || r.posCode,
+      reward: r.reward,
+      net_sales: r.netSales || 45.00,
+      valid: true
+    }))
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PHYSICAL PRINT ASSET STUDIO & MULTI-SURFACE QR ENGINE ENDPOINTS
+// ---------------------------------------------------------------------------
+app.get('/api/print-studio/templates', (req, res) => {
+  const brand = state.brand_profile || {};
+  res.json({
+    status: "ok",
+    placementGuardrail: {
+      rule: "Placement Guardrail: Do NOT place discount game QRs at the front entrance or reception desk. That discounts baseline walk-ins who were already going to pay full price.",
+      recommendation: "Deploy QRs on packaging/delivery seals (converts 3rd-party delivery to direct customers), check-presenters/table-tents (captures post-service re-engagement), digital screens (entertains waiting guests), and product bundle badges."
+    },
+    templates: [
+      {
+        id: "packaging_seals",
+        name: "Packaging / Delivery Seals",
+        badge: "2\" Round / Square Sticker",
+        dimensions: "2.0\" × 2.0\" (Avery 22807 / Amazon Direct)",
+        category: "takeout",
+        surface: "delivery_seal",
+        description: "Adhesive tamper-evident bag seal for DoorDash, UberEats, and takeout orders. Converts delivery commission leaks into direct high-margin regulars.",
+        defaultHeadline: `Loved Your Order from ${brand.name || "Us"}?`,
+        defaultSubhead: "Scan to claim your VIP direct-order reward & skip the delivery app markup!",
+        defaultCta: "Scan for Direct Reward",
+        qrTargetUrl: `/spin?surface=delivery_seal&src=packaging`,
+        guardrailStatus: "approved",
+        recommendedPlacement: "Carryout bag top seal, pizza box tab, or cup sleeve"
+      },
+      {
+        id: "table_tent",
+        name: "Check-Presenter & Table-Tent Inserts",
+        badge: "4\" × 6\" Table / Bill Insert",
+        dimensions: "4.0\" × 6.0\" (Dual-Sided Standee)",
+        category: "on_premise",
+        surface: "check_presenter",
+        description: "Post-service loyalty capture delivered with the bill or placed on dining tables. Engages satisfied guests at the highest point of delight.",
+        defaultHeadline: "Thank You for Visiting!",
+        defaultSubhead: "Play the VIP Arcade before you leave to win up to $50 off your next session.",
+        defaultCta: "Scan to Unlock VIP Reward",
+        qrTargetUrl: `/spin?surface=check_presenter&src=table_tent`,
+        guardrailStatus: "approved",
+        recommendedPlacement: "Inside leather check presenter or centerpiece standee"
+      },
+      {
+        id: "digital_screen_16_9",
+        name: "Digital Screen Assets (Atmosphere TV / Menu Boards)",
+        badge: "16:9 1080p Digital Graphic",
+        dimensions: "1920 × 1080 px (16:9 Display Overlay)",
+        category: "digital_screen",
+        surface: "digital_screen_16_9",
+        description: "High-contrast venue TV overlays with high-visibility QR codes for Atmosphere TV, Chive TV, or digital menu boards.",
+        defaultHeadline: "VIP Loyalty Arcade is LIVE",
+        defaultSubhead: "Scan the TV screen from your seat to unlock this week's exclusive studio token!",
+        defaultCta: "Point Phone Camera at Screen",
+        qrTargetUrl: `/spin?surface=digital_screen_16_9&src=venue_tv`,
+        guardrailStatus: "approved",
+        recommendedPlacement: "Venue lobby TV rotation, waiting lounge screens, or bar monitors"
+      },
+      {
+        id: "bundle_badges",
+        name: "Retail & Product Bundle Badges",
+        badge: "2.5\" Retail Tag",
+        dimensions: "2.5\" × 3.5\" Hangtag / Shelf Talker",
+        category: "retail",
+        surface: "bundle_badge",
+        description: "Special promotional stickers and hangtags for multi-pack merchandise, retail aftercare kits, and product bundles.",
+        defaultHeadline: "Multi-Pack VIP Bonus",
+        defaultSubhead: "Scan to unlock your complimentary aftercare refill on your next studio booking.",
+        defaultCta: "Scan for Bundle Perk",
+        qrTargetUrl: `/spin?surface=bundle_badge&src=retail_pack`,
+        guardrailStatus: "approved",
+        recommendedPlacement: "Product aftercare packaging, retail display shelf talkers"
+      }
     ]
+  });
+});
+
+app.post('/api/print-studio/generate', async (req, res) => {
+  const { templateId, headline, subhead, cta, surface } = req.body || {};
+  const brand = state.brand_profile || {};
+  const surf = surface || "delivery_seal";
+  const playUrl = `/spin?surface=${encodeURIComponent(surf)}&brand=${encodeURIComponent(brand.id || 'studio')}`;
+
+  let qrDataUri = "";
+  try {
+    qrDataUri = await QRCode.toDataURL(playUrl, {
+      width: 400,
+      margin: 1,
+      color: {
+        dark: "#1A1A1A",
+        light: "#FFFFFF"
+      }
+    });
+  } catch (e) {
+    qrDataUri = "";
+  }
+
+  res.json({
+    status: "ok",
+    templateId,
+    surface: surf,
+    headline: headline || `VIP Reward · ${brand.name}`,
+    subhead: subhead || "Scan with your smartphone camera to unlock your verified voucher.",
+    cta: cta || "Scan to Play",
+    qrDataUri,
+    playUrl,
+    brandName: brand.name,
+    brandCity: brand.city
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MULTI-SOURCE ATTRIBUTION HUB ENDPOINTS
+// ---------------------------------------------------------------------------
+app.get('/api/attribution/sources', (req, res) => {
+  const sources = state.attribution_sources || {};
+  
+  // Calculate Totals & Normalized Attribution
+  const metaSpend = (sources.meta || []).reduce((acc, row) => acc + (Number(row.spend) || 0), 0);
+  const metaClicks = (sources.meta || []).reduce((acc, row) => acc + (Number(row.clicks) || 0), 0);
+  const metaImpressions = (sources.meta || []).reduce((acc, row) => acc + (Number(row.impressions) || 0), 0);
+
+  const tiktokSpend = (sources.tiktok || []).reduce((acc, row) => acc + (Number(row.spend) || 0), 0);
+  const tiktokViews = (sources.tiktok || []).reduce((acc, row) => acc + (Number(row.videoViews) || 0), 0);
+  const tiktokClicks = (sources.tiktok || []).reduce((acc, row) => acc + (Number(row.profileClicks) || 0), 0);
+
+  const gbpActions = (sources.gbp || []).reduce((acc, row) => acc + (Number(row.localActions) || 0), 0);
+  const gbpCalls = (sources.gbp || []).reduce((acc, row) => acc + (Number(row.calls) || 0), 0);
+  const gbpDirections = (sources.gbp || []).reduce((acc, row) => acc + (Number(row.directionRequests) || 0), 0);
+  const gbpWebClicks = (sources.gbp || []).reduce((acc, row) => acc + (Number(row.websiteClicks) || 0), 0);
+
+  const posGross = (sources.pos || []).reduce((acc, row) => acc + (Number(row.grossBasketTotal) || 0), 0);
+  const posNet = (sources.pos || []).reduce((acc, row) => acc + (Number(row.netAttributedRevenue) || 0), 0);
+  const posRedeemed = (sources.pos || []).reduce((acc, row) => acc + (Number(row.tokensRedeemed) || 0), 0);
+
+  const totalSpend = metaSpend + tiktokSpend + 59.80; // include organic boost tooling
+  const totalAttributedRevenue = posNet > 0 ? posNet : 13901.00;
+  const blendedRoas = totalSpend > 0 ? (totalAttributedRevenue / totalSpend).toFixed(2) : "7.42";
+  const costPerWalkIn = posRedeemed > 0 ? (totalSpend / posRedeemed).toFixed(2) : "14.85";
+  const grossMarginReturn = posGross > 0 ? Math.round((posNet / posGross) * 100) : 76;
+
+  res.json({
+    status: "ok",
+    summary: {
+      totalSpend: Number(totalSpend.toFixed(2)),
+      totalAttributedRevenue: Number(totalAttributedRevenue.toFixed(2)),
+      blendedRoas: Number(blendedRoas),
+      costPerWalkIn: Number(costPerWalkIn),
+      grossMarginReturn: grossMarginReturn,
+      totalWalkins: posRedeemed || 129,
+      totalAdImpressions: metaImpressions + tiktokViews + 9420,
+      totalDirectActions: metaClicks + tiktokClicks + gbpActions
+    },
+    sources: {
+      meta: sources.meta || [],
+      tiktok: sources.tiktok || [],
+      gbp: sources.gbp || [],
+      pos: sources.pos || []
+    },
+    channelBreakdown: [
+      { channel: "Meta / Facebook", spend: metaSpend, clicks: metaClicks, attributedRev: Math.round(posNet * 0.48), roas: (Math.round(posNet * 0.48) / (metaSpend || 1)).toFixed(2) },
+      { channel: "TikTok / Video Reels", spend: tiktokSpend, views: tiktokViews, clicks: tiktokClicks, attributedRev: Math.round(posNet * 0.32), roas: (Math.round(posNet * 0.32) / (tiktokSpend || 1)).toFixed(2) },
+      { channel: "Google Business / Maps", spend: 29.90, actions: gbpActions, calls: gbpCalls, attributedRev: Math.round(posNet * 0.20), roas: (Math.round(posNet * 0.20) / 29.90).toFixed(2) }
+    ]
+  });
+});
+
+app.post('/api/attribution/import', (req, res) => {
+  const { source, csv } = req.body || {};
+  if (!source || !csv) {
+    return res.status(400).json({ detail: "source ('meta' | 'tiktok' | 'gbp' | 'pos') and csv content required" });
+  }
+
+  const lines = (csv || "").trim().split(/\r?\n/).filter(Boolean);
+  if (lines.length < 2) {
+    return res.status(400).json({ detail: "CSV must contain a header row and at least one data row" });
+  }
+
+  const headers = lines[0].split(',').map(h => h.trim().toLowerCase().replace(/['"]/g, ''));
+  const rows = lines.slice(1).map(line => {
+    // Basic CSV token parser
+    const vals = line.split(',').map(v => v.trim().replace(/^["']|["']$/g, ''));
+    const obj = {};
+    headers.forEach((h, i) => {
+      obj[h] = vals[i] || "";
+    });
+    return obj;
+  });
+
+  let importedCount = 0;
+  if (!state.attribution_sources) {
+    state.attribution_sources = { meta: [], tiktok: [], gbp: [], pos: [] };
+  }
+
+  if (source === 'meta') {
+    const parsed = rows.map((r, idx) => ({
+      campaignId: r.campaign_id || r.campaign || `META-IMP-${idx + 1}`,
+      campaignName: r.campaign_name || r.name || "Meta Ad Set",
+      clicks: Number(r.clicks || r.link_clicks || 250),
+      ctr: Number(r.ctr || r.click_rate || 3.2),
+      cpc: Number(r.cpc || 0.65),
+      spend: Number(r.spend || r.ad_spend || r.amount_spent || 162.50),
+      impressions: Number(r.impressions || 8500),
+      dateRange: r.date_range || r.date || "Current Sprint"
+    }));
+    state.attribution_sources.meta = [...state.attribution_sources.meta, ...parsed];
+    importedCount = parsed.length;
+  } else if (source === 'tiktok') {
+    const parsed = rows.map((r, idx) => ({
+      campaignId: r.campaign_id || r.id || `TT-IMP-${idx + 1}`,
+      videoTitle: r.video_title || r.title || "Short-Form Reel",
+      videoViews: Number(r.video_views || r.views || 12500),
+      watchTimePct: Number(r.watch_time_pct || r.watch_time || 58.0),
+      profileClicks: Number(r.profile_clicks || r.clicks || 420),
+      spend: Number(r.spend || r.ad_spend || 126.00),
+      cpc: Number(r.cpc || 0.30),
+      dateRange: r.date_range || "Current Sprint"
+    }));
+    state.attribution_sources.tiktok = [...state.attribution_sources.tiktok, ...parsed];
+    importedCount = parsed.length;
+  } else if (source === 'gbp') {
+    const parsed = rows.map((r, idx) => ({
+      locationId: r.location_id || r.location || "LOC-PRIMARY",
+      localActions: Number(r.local_actions || r.actions || 450),
+      calls: Number(r.calls || r.phone_calls || 32),
+      directionRequests: Number(r.direction_requests || r.directions || 110),
+      websiteClicks: Number(r.website_clicks || r.website || 280),
+      profileViews: Number(r.profile_views || r.views || 3200),
+      dateRange: r.date_range || "Current Sprint"
+    }));
+    state.attribution_sources.gbp = [...state.attribution_sources.gbp, ...parsed];
+    importedCount = parsed.length;
+  } else if (source === 'pos') {
+    const parsed = rows.map((r, idx) => ({
+      code: r.code || r.coupon_code || r.promo_code || `POS-IMP-${idx + 1}`,
+      tokensRedeemed: Number(r.tokens_redeemed || r.redemptions || r.qty || 15),
+      grossBasketTotal: Number(r.gross_basket_total || r.gross_sales || r.gross || 2250.00),
+      netAttributedRevenue: Number(r.net_attributed_revenue || r.net_sales || r.net || 1800.00),
+      avgTicket: Number(r.avg_ticket || 120.00)
+    }));
+    state.attribution_sources.pos = [...state.attribution_sources.pos, ...parsed];
+    importedCount = parsed.length;
+  }
+
+  // Update longitudinal knowledge data points
+  state.longitudinal_knowledge.totalDataPointsLearned += importedCount * 12;
+  
+  res.json({
+    status: "ok",
+    source,
+    importedCount,
+    message: `Successfully normalized and imported ${importedCount} records from ${source.toUpperCase()} CSV.`
+  });
+});
+
+app.get('/api/attribution/samples/:source', (req, res) => {
+  const { source } = req.params;
+  let csv = "";
+  if (source === 'meta') {
+    csv = "campaign_id,campaign_name,clicks,ctr,cpc,spend,impressions,date_range\n" +
+          "META-CRAFT-01,Master Realism Craft Reel,1420,3.85,0.58,823.60,36880,2026-08-01 - 2026-08-15\n" +
+          "META-FLASH-02,Weekend Flash Booking Promo,790,4.20,0.49,387.10,18800,2026-08-08 - 2026-08-10\n" +
+          "META-RETARG-03,VIP Touchup Nurture Sequence,340,5.10,0.42,142.80,6660,2026-08-01 - 2026-08-15\n";
+  } else if (source === 'tiktok') {
+    csv = "campaign_id,video_title,video_views,watch_time_pct,profile_clicks,spend,cpc,date_range\n" +
+          "TT-CRAFT-60S,Sterile Machine Setup & Fine Line 60s,52400,64.2,1680,480.00,0.28,2026-08-01 - 2026-08-15\n" +
+          "TT-HEALED-30D,Healed Sleeves Real-World Showcase,38900,56.8,1140,340.00,0.30,2026-08-05 - 2026-08-12\n";
+  } else if (source === 'gbp') {
+    csv = "location_id,local_actions,calls,direction_requests,website_clicks,profile_views,date_range\n" +
+          "LOC-MAIN,2140,118,382,990,11200,2026-08-01 - 2026-08-15\n";
+  } else if (source === 'pos') {
+    csv = "coupon_code,tokens_redeemed,gross_basket_total,net_attributed_revenue,avg_ticket\n" +
+          "TAT50-PROMO,42,7350.00,5880.00,175.00\n" +
+          "TAT25-OFF,51,6120.00,4845.00,120.00\n" +
+          "TAT-AFTERCARE,33,3300.00,2805.00,100.00\n" +
+          "TAT-FLASH20,22,3080.00,2464.00,140.00\n";
+  } else {
+    csv = "channel,spend,attributed_revenue\nMeta,1210.70,8450.00\nTikTok,820.00,5400.00\nGBP,29.90,2800.00\n";
+  }
+
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', `attachment; filename="${source}-sample.csv"`);
+  res.send(csv);
+});
+
+app.post('/api/attribution/clear', (req, res) => {
+  state.attribution_sources = {
+    meta: [],
+    tiktok: [],
+    gbp: [],
+    pos: []
+  };
+  res.json({ status: "ok", message: "All multi-source attribution imports cleared." });
+});
+
+// ---------------------------------------------------------------------------
+// CUMULATIVE KNOWLEDGE BASE & LONGITUDINAL LEARNING ENGINE ENDPOINTS
+// ---------------------------------------------------------------------------
+app.get('/api/knowledge/profile', (req, res) => {
+  const brand = state.brand_profile || {};
+  const kn = state.longitudinal_knowledge || {};
+
+  res.json({
+    status: "ok",
+    brandName: brand.name,
+    industryLabel: brand.industryLabel,
+    maturity: {
+      level: kn.maturityLevel,
+      stage: kn.maturityStage,
+      confidenceScore: kn.confidenceScore,
+      monthsAccumulated: kn.monthsAccumulated,
+      totalDataPointsLearned: kn.totalDataPointsLearned,
+      cumulativeAttributedRevenue: kn.cumulativeAttributedRevenue,
+      switchingMoatScore: kn.switchingMoatScore,
+      stages: [
+        { stage: 1, label: "Month 1: Calibration", desc: "Testing channel hooks & baseline offer sensitivity", status: kn.maturityStage >= 1 ? "completed" : "pending", confidence: "28%" },
+        { stage: 2, label: "Month 2-3: Pattern Matched", desc: "Proven creative formats, prize margin floors & peak conversion days locked in", status: kn.maturityStage === 2 ? "active" : kn.maturityStage > 2 ? "completed" : "pending", confidence: "68%" },
+        { stage: 3, label: "Month 6+: Autonomous Market Dominance", desc: "Continuous compounding ROI, predictive scheduling, and autonomous budget shifting", status: kn.maturityStage >= 3 ? "active" : "pending", confidence: "95%" }
+      ]
+    },
+    timeHorizons: kn.timeHorizons,
+    businessMastery: kn.businessMastery,
+    autonomousInsights: kn.autonomousInsights,
+    clientProfileModel: {
+      summary: `${brand.name} customers respond 42% stronger to Scratch & Win mechanics than Spin Wheels. High-craft video reels drive 3.4x more weekend walk-ins than static discount ads. The $25 off $100 service offer protects an average 74.2% gross margin floor while converting 91% of first-time claims.`
+    }
+  });
+});
+
+app.post('/api/knowledge/advance-maturity', (req, res) => {
+  const kn = state.longitudinal_knowledge;
+  if (kn.maturityStage < 3) {
+    kn.maturityStage += 1;
+    if (kn.maturityStage === 3) {
+      kn.maturityLevel = "Month 6+: Autonomous Market Dominance";
+      kn.confidenceScore = 95;
+      kn.monthsAccumulated = 6.2;
+      kn.switchingMoatScore = 98;
+      kn.totalDataPointsLearned += 1400;
+    } else {
+      kn.maturityLevel = "Month 3: Pattern Matched";
+      kn.confidenceScore = 68;
+      kn.monthsAccumulated = 3.4;
+      kn.switchingMoatScore = 92;
+    }
+  }
+  res.json({
+    status: "ok",
+    message: `Learning maturity advanced to '${kn.maturityLevel}' (${kn.confidenceScore}% confidence).`,
+    maturity: kn
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MULTI-TRACK CAMPAIGN STRATEGY & CADENCE ENDPOINTS
+// ---------------------------------------------------------------------------
+app.get('/api/campaigns/tracks', (req, res) => {
+  const tracks = state.campaign_tracks || [];
+  const cadence = state.campaign_cadence || {};
+
+  res.json({
+    status: "ok",
+    tracks,
+    cadence: {
+      currentMode: cadence.mode || "sprint",
+      sprintExpiresAt: cadence.sprintExpiresAt,
+      advisoryNotice: cadence.advisoryNotice,
+      restSchedule: cadence.restSchedule,
+      guardrailRule: "Anti-Fatigue Guardrail: 7-day arcade pulse followed by 2-3 weeks of video awareness / nurture. Avoid uninterrupted discounting."
+    }
+  });
+});
+
+app.post('/api/campaigns/tracks/:trackId/toggle', (req, res) => {
+  const { trackId } = req.params;
+  const track = (state.campaign_tracks || []).find(t => t.id === trackId || t.key === trackId);
+  if (!track) {
+    return res.status(404).json({ detail: "Campaign track not found" });
+  }
+
+  track.status = track.status === 'active' ? 'paused' : 'active';
+  res.json({
+    status: "ok",
+    message: `${track.name} is now ${track.status}.`,
+    track
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HUMAN-GATED APPROVAL STAGING ENDPOINT
+// ---------------------------------------------------------------------------
+app.post('/api/approvals/stage', (req, res) => {
+  const { title, description, category, meta } = req.body || {};
+  const newApproval = {
+    id: `appr_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+    title: title || "Live Media Ad Spend Allocation",
+    description: description || "Approve committing live ad budget and external audience dispatch.",
+    category: category || "ad_spend", // "ad_spend" | "messaging_dispatch" | "strategy"
+    status: "pending",
+    stagedBy: "Co-Captain Autonomous Engine",
+    stagedAt: new Date().toISOString(),
+    meta: meta || { amount: 299.00, channels: ["Meta Reels", "Google Maps Boost"] }
+  };
+
+  if (!state.approvals) state.approvals = [];
+  state.approvals.unshift(newApproval);
+
+  res.json({
+    status: "ok",
+    message: "Action staged for human-gated client approval.",
+    approval: newApproval
   });
 });
 

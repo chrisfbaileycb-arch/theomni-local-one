@@ -73,6 +73,50 @@ export default function Overview({ onNavigate }) {
         proving the revenue at the register, and getting smarter every single week.
       </p>
 
+      {/* Learning Maturity & Moat Spotlight Banner */}
+      <div
+        className="card p-5 mt-6 border-2 flex flex-col md:flex-row items-start md:items-center justify-between gap-4"
+        style={{
+          background: "linear-gradient(135deg, #FDFCF8 0%, #F6EFE6 100%)",
+          borderColor: "var(--primary)"
+        }}
+        data-testid="learning-maturity-banner"
+      >
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-orange-700 text-white font-bold shrink-0 shadow-sm">
+            🧠
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider bg-orange-100 text-orange-900">
+                Self-Learning Local OS
+              </span>
+              <span className="text-xs text-green-700 font-bold">• Maturity: Month 3 (Pattern Matched)</span>
+            </div>
+            <div className="font-bold text-sm text-slate-900 mt-0.5">
+              Accumulated Intelligence: 2,480 Data Points · 92/100 Retention Moat
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={() => onNavigate && onNavigate("attribution")}
+            className="btn btn-ghost text-xs px-3 py-2 border border-slate-300"
+            data-testid="go-attribution-btn"
+          >
+            Attribution Hub CSVs →
+          </button>
+          <button
+            onClick={() => onNavigate && onNavigate("knowledge")}
+            className="btn btn-primary text-xs px-4 py-2"
+            data-testid="go-knowledge-btn"
+          >
+            Knowledge Base →
+          </button>
+        </div>
+      </div>
+
       {/* Hero money counter */}
       <motion.div
         initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }}
