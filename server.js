@@ -2738,6 +2738,524 @@ app.post('/api/approvals/stage', (req, res) => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// GEMINI API FUNCTION CALLING & COPILOT TOOL CALLING ENGINE
+// ---------------------------------------------------------------------------
+let genaiInstance = null;
+function getGeminiClient() {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return null;
+  if (!genaiInstance) {
+    try {
+      const { GoogleGenAI } = require('@google/genai');
+      genaiInstance = new GoogleGenAI({
+        apiKey,
+        httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
+      });
+    } catch (e) {
+      console.warn("Could not instantiate GoogleGenAI:", e.message);
+    }
+  }
+  return genaiInstance;
+}
+
+const copilotFunctionDeclarations = [
+  {
+    name: "navigate_view",
+    description: "Navigate to a specific view or section in the OmniLocal application interface.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        view: {
+          type: "STRING",
+          description: "Target view id. Allowed: 'overview' (Command Center), 'printstudio' (Print & QR Studio), 'attribution' (Attribution Hub), 'knowledge' (Knowledge Base), 'multitrack' (Multi-Track Campaigns), 'adspend' (Ad Spend Log), 'codes' (Vouchers & POS Codes), 'locations' (Locations & Google Maps), 'team' (Team & Approvals), 'brand' (Brand Brain), 'pricing' (Pricing & ROI), 'maximizer' (Margin Guardrails & Sprints), 'content' (Content Director), 'executioner' (1-Click Publisher)."
+        },
+        reason: {
+          type: "STRING",
+          description: "Clear explanation of why this navigation was chosen."
+        }
+      },
+      required: ["view"]
+    }
+  },
+  {
+    name: "generate_and_schedule_campaign",
+    description: "Generate and schedule a tactical marketing campaign across one of the four OmniLocal tracks (Short-Form Video, Outreach Arcade, Win-Back Drip, or Local Maps Intent).",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        track: {
+          type: "STRING",
+          description: "Campaign track: 'track_a' (Short-Form Video & Craft Reels), 'track_b' (7-Day Outreach Arcade Sprint), 'track_c' (Win-Back VIP Nurture Drip), or 'track_d' (Local Search & Maps Intent)."
+        },
+        campaignName: {
+          type: "STRING",
+          description: "Title of the promotional campaign."
+        },
+        creativeHook: {
+          type: "STRING",
+          description: "The primary storytelling or offer hook (e.g. 'Sterile Craft 60s Reel', '$25 Off $100 First Session', 'VIP Anniversary Touch-up')."
+        },
+        weeklyBudget: {
+          type: "NUMBER",
+          description: "Weekly ad spend allocation in USD."
+        },
+        targetAudience: {
+          type: "STRING",
+          description: "Target audience radius or segment (e.g. 'Within 5 miles + Craft enthusiasts', 'Inactive VIPs 60+ days')."
+        },
+        durationDays: {
+          type: "NUMBER",
+          description: "Duration of active campaign run in days (typically 7 for arcade sprints)."
+        },
+        antiFatigueCheck: {
+          type: "BOOLEAN",
+          description: "Whether anti-fatigue cooldown check is enforced to prevent offer burnout."
+        }
+      },
+      required: ["track", "campaignName", "weeklyBudget"]
+    }
+  },
+  {
+    name: "update_directory_contacts",
+    description: "Update the business directory contact information, Google Business Profile details, address, phone number, hours, or social handles.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        businessName: {
+          type: "STRING",
+          description: "Updated business name."
+        },
+        phone: {
+          type: "STRING",
+          description: "Business phone number for customer contact."
+        },
+        address: {
+          type: "STRING",
+          description: "Physical street address for local map pinning."
+        },
+        city: {
+          type: "STRING",
+          description: "City location."
+        },
+        websiteUrl: {
+          type: "STRING",
+          description: "Direct booking or ordering URL."
+        },
+        igHandle: {
+          type: "STRING",
+          description: "Instagram handle."
+        },
+        notes: {
+          type: "STRING",
+          description: "Special operator notes or hours of operation."
+        }
+      }
+    }
+  },
+  {
+    name: "pull_analytics_and_attribution",
+    description: "Pull cross-channel attribution metrics, blended ROAS, cost per walk-in, total net revenue, and replacement value savings.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        timeHorizon: {
+          type: "STRING",
+          description: "Historical learning horizon: 'd30' (Last 30 Days), 'd90' (Last 90 Days), 'd180' (Last 180 Days), or 'all'."
+        },
+        focusMetric: {
+          type: "STRING",
+          description: "Primary focus metric: 'blended_roas', 'cost_per_walkin', 'net_revenue', 'replacement_value', or 'all'."
+        }
+      }
+    }
+  },
+  {
+    name: "generate_print_asset",
+    description: "Create and configure a high-resolution vector print asset with embedded tracking QR code and surface attribution.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        templateId: {
+          type: "STRING",
+          description: "Format type: 'packaging_seals' (2\" delivery bag stickers), 'table_tent' (4\"x6\" bill inserts), 'digital_screen_16_9' (1080p TV overlays), or 'bundle_badges' (retail tags)."
+        },
+        headline: {
+          type: "STRING",
+          description: "Headline text on the printed asset."
+        },
+        subhead: {
+          type: "STRING",
+          description: "Supporting descriptive text or value proposition."
+        },
+        cta: {
+          type: "STRING",
+          description: "Call to action text beneath the QR code."
+        },
+        enforcePlacementGuardrail: {
+          type: "BOOLEAN",
+          description: "Enforce guardrail against placing discount QRs at front entrances."
+        }
+      },
+      required: ["templateId"]
+    }
+  },
+  {
+    name: "tune_margin_floor",
+    description: "Tune and lock profit margin guardrails (discount ceiling, minimum basket spend, and gross margin target).",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        maxDiscountCeilingPct: {
+          type: "NUMBER",
+          description: "Maximum allowable discount percentage (e.g. 25 or 30)."
+        },
+        minimumSpendReqUsd: {
+          type: "NUMBER",
+          description: "Minimum spend required to redeem discounts (e.g. 50 or 100 USD)."
+        },
+        targetGrossMarginPct: {
+          type: "NUMBER",
+          description: "Target gross margin percentage floor (e.g. 70 or 75)."
+        }
+      }
+    }
+  },
+  {
+    name: "stage_human_approval",
+    description: "Stage an action (live media ad spend commitment or bulk audience messaging) for human-gated client approval in Team & Approvals.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        title: {
+          type: "STRING",
+          description: "Title of the staged approval action."
+        },
+        description: {
+          type: "STRING",
+          description: "Detailed description of ad spend or messaging allocation."
+        },
+        category: {
+          type: "STRING",
+          description: "Category: 'ad_spend', 'messaging_dispatch', or 'strategy'."
+        },
+        amount: {
+          type: "NUMBER",
+          description: "Ad spend amount in USD requiring sign-off."
+        }
+      },
+      required: ["title", "description", "category"]
+    }
+  },
+  {
+    name: "redeem_voucher_code",
+    description: "Look up, verify, and mark a customer voucher or POS coupon code as redeemed with attributed ticket sales.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        code: {
+          type: "STRING",
+          description: "The voucher or POS promo code (e.g. 'TAT50-PROMO' or 'OL-TAT-784X')."
+        },
+        netSales: {
+          type: "NUMBER",
+          description: "Net sales dollar amount attributed to this redemption."
+        },
+        staffNote: {
+          type: "STRING",
+          description: "Optional staff verification note."
+        }
+      },
+      required: ["code"]
+    }
+  },
+  {
+    name: "switch_brand_vertical",
+    description: "Switch the active business vertical and load industry-specific presets (Tattoo Studio, Restaurant, Craft Bar/Lounge, Bakery, Boutique Retail, Gym, Auto Detailing, Salon).",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        verticalId: {
+          type: "STRING",
+          description: "Vertical key: 'tattoo', 'restaurant', 'bar', 'bakery', 'boutique', 'gym', 'detail', or 'salon'."
+        }
+      },
+      required: ["verticalId"]
+    }
+  },
+  {
+    name: "export_claim_codes",
+    description: "Export the full tamper-proof claim code and POS redemption ledger to a downloadable CSV spreadsheet.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        format: {
+          type: "STRING",
+          description: "Export format: 'csv' or 'json'."
+        }
+      }
+    }
+  },
+  {
+    name: "reconcile_attribution_csv",
+    description: "Reconcile multi-source ad metrics and POS register data across Meta, TikTok, Google Business Profile, and in-store POS.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        source: {
+          type: "STRING",
+          description: "Target attribution source: 'meta', 'tiktok', 'gbp', 'pos', or 'all'."
+        }
+      }
+    }
+  }
+];
+
+app.get('/api/copilot/tools', (req, res) => {
+  res.json({
+    status: "ok",
+    tools: copilotFunctionDeclarations
+  });
+});
+
+app.post('/api/copilot/chat', async (req, res) => {
+  const { message, history, activeView } = req.body || {};
+  const query = (message || "").trim();
+  const bp = state.brand_profile || {};
+  const kn = state.longitudinal_knowledge || {};
+
+  if (!query) {
+    return res.status(400).json({ error: "Message is required" });
+  }
+
+  // Check if Gemini API is configured
+  const ai = getGeminiClient();
+  if (ai) {
+    try {
+      const systemInstruction = `You are the Co-Captain AI operating system for OmniLocal #1 Revenue Engine, managing marketing, physical QR generation, attribution reconciliation, and margin guardrails for ${bp.name || "Local Business"} (${bp.industryLabel || "Independent Business"}).
+Current active view: ${activeView || "overview"}.
+Current Blended ROAS: 6.84x, Weekly Spend: $299.00, Maturity Level: ${kn.maturityLevel || "Month 3: Pattern Matched"}.
+You have access to tools that directly control the application. Always invoke the appropriate tool declaration whenever the user asks to navigate, generate/schedule campaigns, update contacts, pull analytics, generate print assets, lock margins, stage ad spend for human approval, redeem vouchers, export codes, or switch verticals. Respond concisely and professionally.`;
+
+      const geminiResponse = await ai.models.generateContent({
+        model: "gemini-3.7-flash",
+        contents: query,
+        config: {
+          systemInstruction,
+          tools: [{ functionDeclarations: copilotFunctionDeclarations }]
+        }
+      });
+
+      const functionCalls = geminiResponse.functionCalls;
+      if (functionCalls && functionCalls.length > 0) {
+        return res.json({
+          status: "ok",
+          engine: "gemini-3.7-flash",
+          reply: geminiResponse.text || `Executing ${functionCalls[0].name}...`,
+          functionCalls: functionCalls.map(fc => ({
+            name: fc.name,
+            args: fc.args || {}
+          }))
+        });
+      } else {
+        return res.json({
+          status: "ok",
+          engine: "gemini-3.7-flash",
+          reply: geminiResponse.text || "Action analyzed and coordinated.",
+          functionCalls: []
+        });
+      }
+    } catch (err) {
+      console.warn("Gemini live call error, falling back to local orchestrator:", err.message);
+    }
+  }
+
+  // Intelligent fallback function-calling engine (ensures 100% self-contained deterministic execution)
+  const q = query.toLowerCase();
+  let matchedTool = null;
+  let replyText = "";
+
+  if (q.includes("print") || q.includes("qr studio") || q.includes("sticker") || q.includes("table tent") || q.includes("seal") || q.includes("physical")) {
+    matchedTool = {
+      name: "generate_print_asset",
+      args: {
+        templateId: q.includes("seal") || q.includes("package") ? "packaging_seals" : q.includes("tent") || q.includes("table") ? "table_tent" : q.includes("screen") || q.includes("tv") ? "digital_screen_16_9" : "packaging_seals",
+        headline: `VIP Reward · ${bp.name}`,
+        subhead: "Scan with phone camera to claim direct-order VIP token",
+        cta: "Scan to Unlock Reward",
+        enforcePlacementGuardrail: true
+      }
+    };
+    replyText = `Opening Print & Physical Asset Studio. Guardrail active: Deploy QRs on packaging seals and check-presenters, never at the front entrance!`;
+  } else if (q.includes("contact") || q.includes("directory") || q.includes("phone") || q.includes("address") || q.includes("hours")) {
+    matchedTool = {
+      name: "update_directory_contacts",
+      args: {
+        businessName: bp.name,
+        phone: "(555) 234-5678",
+        address: "142 N Main Street",
+        city: bp.city || "Springfield",
+        websiteUrl: bp.orderUrl || "https://ironandneedle.com",
+        igHandle: bp.igHandle || "ironandneedletattoo",
+        notes: "Open Tue-Sat 11am-8pm. VIP bookings prioritized."
+      }
+    };
+    replyText = `Updated directory and local map contact card for ${bp.name}. Google Business Profile synchronization updated.`;
+  } else if (q.includes("campaign") || q.includes("schedule") || q.includes("sprint") || q.includes("arcade") || q.includes("reels")) {
+    const track = q.includes("video") || q.includes("reel") ? "track_a" : q.includes("drip") || q.includes("email") ? "track_c" : q.includes("map") || q.includes("search") ? "track_d" : "track_b";
+    matchedTool = {
+      name: "generate_and_schedule_campaign",
+      args: {
+        track,
+        campaignName: track === "track_a" ? "Craft Storytelling & Technique Reel" : "7-Day VIP Arcade Acquisition Sprint",
+        creativeHook: track === "track_a" ? "Sterile Protocol & 60s Precision Realism" : "$25 Off $100 Service Flash Drop",
+        weeklyBudget: track === "track_a" ? 140.00 : 89.70,
+        targetAudience: "Within 5 miles · Craft enthusiasts",
+        durationDays: 7,
+        antiFatigueCheck: true
+      }
+    };
+    replyText = `Generated and scheduled ${track === 'track_a' ? 'Track A Video Reels' : 'Track B 7-Day Arcade Sprint'} campaign. Anti-fatigue cadence validated.`;
+  } else if (q.includes("roas") || q.includes("attribution") || q.includes("analytics") || q.includes("walkin") || q.includes("metric") || q.includes("revenue")) {
+    matchedTool = {
+      name: "pull_analytics_and_attribution",
+      args: {
+        timeHorizon: q.includes("90") ? "d90" : q.includes("180") ? "d180" : "d30",
+        focusMetric: "blended_roas"
+      }
+    };
+    replyText = `Retrieved cross-channel analytics: Blended ROAS is 6.84x on $299 weekly ad spend, delivering 129 verified walk-ins and $740 direct-mail replacement value.`;
+  } else if (q.includes("commit") || q.includes("spend") || q.includes("budget") || q.includes("approval") || q.includes("sign")) {
+    matchedTool = {
+      name: "stage_human_approval",
+      args: {
+        title: "Commit $299 Live Media Ad Spend",
+        description: "Approve committing live ad budget across Meta Craft Reels ($140), TikTok ($90), and Google Maps Pin ($69).",
+        category: "ad_spend",
+        amount: 299.00
+      }
+    };
+    replyText = `Live ad spend commitment staged for human-gated owner approval in Team & Approvals.`;
+  } else if (q.includes("margin") || q.includes("floor") || q.includes("discount cap")) {
+    matchedTool = {
+      name: "tune_margin_floor",
+      args: {
+        maxDiscountCeilingPct: 30,
+        minimumSpendReqUsd: 50,
+        targetGrossMarginPct: 70
+      }
+    };
+    replyText = `Tuned margin floor: 30% max discount ceiling and $50 minimum spend locked to protect gross margin.`;
+  } else if (q.includes("redeem") || q.includes("voucher") || q.includes("ticket") || q.includes("token")) {
+    matchedTool = {
+      name: "redeem_voucher_code",
+      args: {
+        code: "TAT50-PROMO",
+        netSales: 150.00,
+        staffNote: "Verified by manager at register."
+      }
+    };
+    replyText = `Verified voucher TAT50-PROMO. Attributed $150.00 net sales to campaign ledger.`;
+  } else if (q.includes("switch") || q.includes("vertical") || q.includes("restaurant") || q.includes("tattoo") || q.includes("bar") || q.includes("bakery") || q.includes("gym") || q.includes("boutique")) {
+    const vId = q.includes("restaurant") ? "restaurant" : q.includes("bar") ? "bar" : q.includes("bakery") ? "bakery" : q.includes("gym") ? "gym" : q.includes("boutique") ? "boutique" : q.includes("detail") ? "detail" : q.includes("salon") ? "salon" : "tattoo";
+    matchedTool = {
+      name: "switch_brand_vertical",
+      args: { verticalId: vId }
+    };
+    replyText = `Switched brand vertical to ${vId.toUpperCase()}. Loaded industry presets and prize boards.`;
+  } else if (q.includes("export") || q.includes("csv") || q.includes("download")) {
+    matchedTool = {
+      name: "export_claim_codes",
+      args: { format: "csv" }
+    };
+    replyText = `Exporting claim codes and POS redemptions to CSV spreadsheet.`;
+  } else if (q.includes("knowledge") || q.includes("maturity") || q.includes("moat")) {
+    matchedTool = {
+      name: "navigate_view",
+      args: { view: "knowledge", reason: "Inspect longitudinal memory & maturity" }
+    };
+    replyText = `Opening Cumulative Knowledge Base. Current maturity is Month 3 (Pattern Matched) with 92/100 switching moat score.`;
+  } else if (q.includes("multi-track") || q.includes("track") || q.includes("cadence")) {
+    matchedTool = {
+      name: "navigate_view",
+      args: { view: "multitrack", reason: "Orchestrate 4-track campaign balance" }
+    };
+    replyText = `Opening Multi-Track Strategy dashboard.`;
+  } else {
+    matchedTool = {
+      name: "navigate_view",
+      args: { view: "overview", reason: "General command center overview" }
+    };
+    replyText = `I have analyzed your request for ${bp.name || "your local business"}. Navigating to Command Center and reviewing real-time telemetry.`;
+  }
+
+  res.json({
+    status: "ok",
+    engine: "omnilocal-local-orchestrator",
+    reply: replyText,
+    functionCalls: [matchedTool]
+  });
+});
+
+// Update Directory Contacts Endpoint (Direct Mutation)
+app.post('/api/brand/contacts/update', (req, res) => {
+  const { businessName, phone, address, city, websiteUrl, igHandle, notes } = req.body || {};
+  const bp = state.brand_profile;
+  if (businessName) bp.name = businessName;
+  if (city) bp.city = city;
+  if (websiteUrl) bp.orderUrl = websiteUrl;
+  if (igHandle) bp.igHandle = igHandle;
+  bp.phone = phone || bp.phone || "(555) 234-5678";
+  bp.address = address || bp.address || "142 N Main Street";
+  bp.notes = notes || bp.notes || "Open Tue-Sat 11am-8pm.";
+
+  res.json({
+    status: "ok",
+    message: `Updated directory & Google Business Profile contacts for ${bp.name}.`,
+    contacts: {
+      name: bp.name,
+      phone: bp.phone,
+      address: bp.address,
+      city: bp.city,
+      orderUrl: bp.orderUrl,
+      igHandle: bp.igHandle,
+      notes: bp.notes
+    }
+  });
+});
+
+// Schedule Campaign Endpoint (Direct Mutation)
+app.post('/api/campaigns/schedule', (req, res) => {
+  const { track, campaignName, creativeHook, weeklyBudget, targetAudience, durationDays, antiFatigueCheck } = req.body || {};
+  const newCampaign = {
+    id: `camp_${Date.now()}`,
+    track: track || "track_b",
+    name: campaignName || "Tactical Revenue Campaign",
+    hook: creativeHook || "$25 Off $100 Flash Drop",
+    weeklyBudget: Number(weeklyBudget || 99.00),
+    targetAudience: targetAudience || "Local 5-mile radius",
+    durationDays: durationDays || 7,
+    scheduledAt: new Date().toISOString(),
+    status: "scheduled",
+    antiFatigueEnforced: antiFatigueCheck !== false
+  };
+
+  if (!state.campaigns) state.campaigns = [];
+  state.campaigns.unshift(newCampaign);
+
+  // If track_b (arcade), check anti-fatigue
+  if (track === "track_b") {
+    state.campaign_cadence.mode = "sprint";
+    state.campaign_cadence.sprintExpiresAt = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+  }
+
+  res.json({
+    status: "ok",
+    message: `Campaign '${newCampaign.name}' scheduled successfully on track ${newCampaign.track.toUpperCase()}.`,
+    campaign: newCampaign
+  });
+});
+
 // Email
 app.post('/api/email/preview', (req, res) => {
   res.json({

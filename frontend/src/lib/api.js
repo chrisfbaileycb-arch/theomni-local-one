@@ -195,3 +195,12 @@ export const toggleCampaignTrack = (trackId) => client.post(`/campaigns/tracks/$
 // Human-Gated Approvals Staging
 export const stageHumanApproval = (body) => client.post("/approvals/stage", body).then((r) => r.data);
 
+// Gemini API Function Calling & Copilot Agent Engine
+export const chatWithCopilot = (message, history, activeView) =>
+  client.post("/copilot/chat", { message, history, activeView }).then((r) => r.data);
+export const getCopilotTools = () => client.get("/copilot/tools").then((r) => r.data);
+export const updateDirectoryContacts = (contacts) =>
+  client.post("/brand/contacts/update", contacts).then((r) => r.data);
+export const scheduleCampaign = (campaign) =>
+  client.post("/campaigns/schedule", campaign).then((r) => r.data);
+
