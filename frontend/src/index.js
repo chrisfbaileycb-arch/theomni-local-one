@@ -32,9 +32,18 @@ function Root() {
 }
 
 if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/sw.js").catch(() => {});
-  });
+  if (process.env.NODE_ENV === "production" && window.self === window.top) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("/sw.js").catch(() => {});
+    });
+  } else {
+    // Unregister any active workers in development or iframe contexts to prevent cache locks
+    navigator.serviceWorker.getRegistrations().then((registrations) => {
+      for (const registration of registrations) {
+        registration.unregister().catch(() => {});
+      }
+    }).catch(() => {});
+  }
 }
 
 const root = ReactDOM.createRoot(document.getElementById("root"));

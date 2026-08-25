@@ -1150,20 +1150,70 @@ app.put('/api/content/brand-profile', (req, res) => {
   res.json(state.brand_profile);
 });
 
-app.post('/api/content/copy', (req, res) => {
+app.post('/api/content/copy', async (req, res) => {
   const { transcript } = req.body || {};
-  const clean = (transcript || "Fresh handmade mozzarella and authentic Sunday gravy, made with pride every morning.").trim();
-  const b = state.brand_profile;
+  const b = state.brand_profile || {};
+  const clean = (transcript || `Showcasing ${b.name || "our local business"}, ${b.signatureItem || "our signature craft"} in ${b.city || "town"}.`).trim();
+  
+  const ai = getGeminiClient();
+  if (ai) {
+    try {
+      const prompt = `You are the Content Director copywriting AI for "${b.name}" (${b.industryLabel || b.category || "Local Business"}), located in ${b.city || "Springfield"}.
+Brand Voice: ${b.voice || "Warm, authentic, community-centric"}.
+Signature Item/Service: ${b.signatureItem || "Signature Service"}.
+Booking/Order URL: ${b.orderUrl || "https://localbusiness.com"}.
+Instagram Handle: @${b.igHandle || "localbiz"}.
+
+The business owner or staff provided this transcript / video topic:
+"${clean}"
+
+Generate high-converting, platform-tailored marketing copy for 3 distinct surfaces:
+1. "gbp" (Google Business Profile What's New post): Local SEO focused, mentions the city (${b.city}), highlights signature offering, includes clear direct call-to-action link (${b.orderUrl}).
+2. "facebook" (Facebook Feed & Reels): Engaging community story, conversational question to spark local comments, warm tone, clean spacing.
+3. "instagram" (Instagram Reel & Post Caption): Hook-driven visual caption, sensory/craft details, call to action, and 5-7 relevant local & industry hashtags.
+
+Return ONLY a valid JSON object matching this exact schema:
+{
+  "gbp": "Google Business copy...",
+  "facebook": "Facebook copy...",
+  "instagram": "Instagram copy..."
+}`;
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3.7-flash",
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json"
+        }
+      });
+
+      const parsed = JSON.parse(response.text);
+      if (parsed.gbp && parsed.facebook && parsed.instagram) {
+        return res.json({
+          drafts: parsed,
+          gbp: parsed.gbp,
+          facebook: parsed.facebook,
+          instagram: parsed.instagram,
+          engine: "gemini-3.7-flash"
+        });
+      }
+    } catch (e) {
+      console.warn("Gemini copy generation fallback:", e.message);
+    }
+  }
+
+  const cityTag = (b.city || "Springfield").replace(/\s+/g, '');
+  const itemTag = (b.signatureItem || "SignatureItem").replace(/[^a-zA-Z0-9]/g, '');
+  const defaultDrafts = {
+    gbp: `Looking for top-rated ${b.industryLabel || "service"} in ${b.city}? At ${b.name}, we take pride in delivering our signature ${b.signatureItem}. Book or order direct today at ${b.orderUrl}`,
+    facebook: `Crafted with care in ${b.city}: here is a look behind the scenes of our ${b.signatureItem}. What makes a great local experience for you? Drop a comment below! ❤️✨`,
+    instagram: `Every detail counts at ${b.name}. From raw ingredients to final touch, our ${b.signatureItem} speaks for itself. Stop by or link in bio to experience it! 🔥\n\n#${cityTag} #LocalBusiness #${itemTag} #SupportLocal @${b.igHandle || "omnilocal"}`
+  };
 
   res.json({
-    drafts: {
-      gbp: `Craving real Italian comfort food in ${b.city}? Nonna's kitchen is serving up fresh ${b.signatureItem} made from scratch daily. Order online today: ${b.orderUrl}`,
-      facebook: `Family recipe straight from Naples: every Sunday gravy takes 6 slow hours to reach perfection. What's your favorite comfort dish on a rainy afternoon? Drop a comment below! 🍝❤️`,
-      instagram: `Hand-pulled mozzarella, golden toasted hero rolls, and that 6-hour simmer. Nothing beats ${b.signatureItem}. Stop by today or tag a friend who needs this lunch! 🥖🔥\n\n#${b.city.replace(/\s+/g, '')}Eats #LocalDeli #ItalianAmerican #${b.signatureItem.replace(/\s+/g, '')} #SupportLocal @${b.igHandle}`
-    },
-    gbp: `Craving real Italian comfort food in ${b.city}? Nonna's kitchen is serving up fresh ${b.signatureItem} made from scratch daily. Order online today: ${b.orderUrl}`,
-    facebook: `Family recipe straight from Naples: every Sunday gravy takes 6 slow hours to reach perfection. What's your favorite comfort dish on a rainy afternoon? Drop a comment below! 🍝❤️`,
-    instagram: `Hand-pulled mozzarella, golden toasted hero rolls, and that 6-hour simmer. Nothing beats ${b.signatureItem}. Stop by today or tag a friend who needs this lunch! 🥖🔥\n\n#${b.city.replace(/\s+/g, '')}Eats #LocalDeli #ItalianAmerican #${b.signatureItem.replace(/\s+/g, '')} #SupportLocal @${b.igHandle}`
+    drafts: defaultDrafts,
+    ...defaultDrafts,
+    engine: "local-fallback"
   });
 });
 
@@ -1199,8 +1249,64 @@ app.post('/api/content/critic/upload/chunk', (req, res) => {
   res.json({ status: "ok" });
 });
 
-app.post('/api/content/critic/analyze', (req, res) => {
-  const { filename } = req.body || {};
+app.post('/api/content/critic/analyze', async (req, res) => {
+  const { filename, transcript } = req.body || {};
+  const b = state.brand_profile || {};
+  const cleanTranscript = (transcript || "Welcome everyone! Today we're showing you our signature craft behind the scenes.").trim();
+
+  const ai = getGeminiClient();
+  if (ai) {
+    try {
+      const prompt = `You are the Content Director Video Critic AI analyzing a short-form vertical video (Reels / TikTok / Shorts) for "${b.name}" (${b.industryLabel || "Local Business"}).
+Video File: ${filename || "clip.mov"}.
+Transcript/Audio: "${cleanTranscript}".
+
+Evaluate the clip strictly across 3 dimensions:
+1. Hook (0-3s retention and opening visual/verbal energy)
+2. Audio (clarity, background noise level, vocal confidence)
+3. Framing (lighting, 9:16 vertical stability, subject centering)
+4. Overall Grade ("STRONG", "IMPROVABLE", or "WEAK")
+5. Tactical Plan Check (verdict: "ON-PLAN" or "NEEDS-FIX", matched items, and fix steps).
+
+Return ONLY valid JSON matching this schema:
+{
+  "report": {
+    "filename": "${filename || 'clip.mov'}",
+    "hook": { "grade": "STRONG", "critique": "...", "recommendation": "..." },
+    "audio": { "grade": "STRONG", "critique": "...", "recommendation": "..." },
+    "framing": { "grade": "STRONG", "critique": "...", "recommendation": "..." },
+    "overall": "STRONG",
+    "measured": { "durationSec": 28, "wordsPerMinute": 135, "framesAnalyzed": 840, "hasAudio": true }
+  },
+  "transcript": "${cleanTranscript.replace(/"/g, '\\"')}",
+  "planCheck": {
+    "verdict": "ON-PLAN",
+    "matched": ["Action-first hook", "Signature offering displayed"],
+    "fix": []
+  }
+}`;
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3.7-flash",
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json"
+        }
+      });
+
+      const parsed = JSON.parse(response.text);
+      if (parsed.report) {
+        return res.json({
+          ...parsed,
+          videoUrl: null,
+          engine: "gemini-3.7-flash"
+        });
+      }
+    } catch (e) {
+      console.warn("Gemini video critic fallback:", e.message);
+    }
+  }
+
   const report = {
     filename: filename || "video-upload.mov",
     hook: { grade: "STRONG", critique: "Starts right on the hero subject. Hook captured within 1.2s.", recommendation: "Great fast action start." },
@@ -1211,9 +1317,10 @@ app.post('/api/content/critic/analyze', (req, res) => {
   };
   res.json({
     report,
-    transcript: "Welcome to Nonna's! Today we're pulling the fresh mozzarella warm from the curd.",
+    transcript: cleanTranscript,
     videoUrl: null,
-    planCheck: { verdict: "ON-PLAN", matched: ["Action-first hook", "Signature dish showcased"], fix: [] }
+    planCheck: { verdict: "ON-PLAN", matched: ["Action-first hook", "Signature dish showcased"], fix: [] },
+    engine: "local-fallback"
   });
 });
 
@@ -1375,19 +1482,65 @@ app.delete('/api/content/industries/:iid', (req, res) => {
 });
 
 // The Coach
-app.post('/api/coach/template', (req, res) => {
+app.post('/api/coach/template', async (req, res) => {
   const { topic } = req.body || {};
   const t = (topic || "Signature Special").trim();
-  const b = state.brand_profile;
-  const newTmpl = {
-    id: `tmpl_${Date.now()}`,
-    topic: t,
-    template: {
-      hook: `Hold up the dish or ingredient and say: 'This is why ${b.name} does ${t} differently than anyone in ${b.city}.'`,
+  const b = state.brand_profile || {};
+
+  let generatedTemplate = null;
+  const ai = getGeminiClient();
+  if (ai) {
+    try {
+      const prompt = `You are "The Coach", an elite local business video director for "${b.name}" (${b.industryLabel || "Local Business"}), located in ${b.city || "Springfield"}.
+Brand Voice: ${b.voice || "Passionate craftsperson, authoritative, authentic"}.
+Signature item: ${b.signatureItem || "Signature Service"}.
+
+Topic for 60-Second Video Shooting Sheet: "${t}".
+
+Generate a structured video shooting script for the owner/staff containing:
+1. hook: The first 3 seconds to stop viewers scrolling (opening verbal line + physical action).
+2. action: 3 rapid cut descriptions showing the behind-the-scenes craft with real sensory cues.
+3. callToAction: Clear next step directing viewers to the rewards wheel or direct booking URL (${b.orderUrl}).
+4. filmingTips: Practical phone camera distance, audio mic placement, and natural lighting tips.
+
+Return ONLY valid JSON matching this schema:
+{
+  "hook": "...",
+  "action": "...",
+  "callToAction": "...",
+  "filmingTips": "..."
+}`;
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3.7-flash",
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json"
+        }
+      });
+
+      const parsed = JSON.parse(response.text);
+      if (parsed.hook && parsed.action && parsed.callToAction) {
+        generatedTemplate = parsed;
+      }
+    } catch (e) {
+      console.warn("Gemini coach template fallback:", e.message);
+    }
+  }
+
+  if (!generatedTemplate) {
+    generatedTemplate = {
+      hook: `Hold up the dish or tool and say: 'This is why ${b.name} does ${t} differently than anyone in ${b.city}.'`,
       action: "Show the signature prep technique in 3 quick cuts — high energy, real sound effects.",
       callToAction: `Claim your first-time reward on our rewards wheel or order online at ${b.orderUrl}.`,
       filmingTips: "Shoot vertical with phone microphone 12 inches from mouth. Keep raw & authentic."
-    },
+    };
+  }
+
+  const newTmpl = {
+    id: `tmpl_${Date.now()}`,
+    topic: t,
+    template: generatedTemplate,
     createdAt: new Date().toISOString()
   };
   state.coach_templates.unshift(newTmpl);
@@ -1590,18 +1743,55 @@ app.post('/api/executioner/reset', (req, res) => {
   res.json({ status: "ok" });
 });
 
-app.get('/api/executioner/recommended-plan', (req, res) => {
+app.get('/api/executioner/recommended-plan', async (req, res) => {
   const latest = state.reports[state.reports.length - 1];
   const shareA = latest?.decision?.nextShareA || 0.75;
   const shareB = latest?.decision?.nextShareB || 0.25;
   const totalBudget = 299.00;
+  const b = state.brand_profile || {};
+  const cadence = state.campaign_cadence || {};
+
+  let diversificationTip = "Strategy A continues to drive higher ROAS in your core zip codes. Maintaining 25% allocation to Strategy B keeps new local discovery alive.";
+  let projectedRoas = 7.2;
+
+  const ai = getGeminiClient();
+  if (ai) {
+    try {
+      const prompt = `You are the Customer Maximizer AI Decision Engine for "${b.name}" (${b.industryLabel || "Local Business"}).
+Current Ad Spend: $${totalBudget}/week.
+Recent Blended ROAS: ${latest?.blendedRoas || 6.84}x ($${latest?.totalRevenue || 2044.00} net revenue).
+Current Strategy A (Paid Local Velocity) share: ${Math.round(shareA * 100)}%.
+Current Strategy B (Community Flywheel) share: ${Math.round(shareB * 100)}%.
+Campaign Cadence Mode: ${cadence.mode || "sprint"}.
+
+Analyze performance and return ONLY valid JSON:
+{
+  "diversificationTip": "1-2 sentence recommendation for local marketing budget allocation and anti-fatigue balance",
+  "projectedRoas": 7.4
+}`;
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3.7-flash",
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json"
+        }
+      });
+
+      const parsed = JSON.parse(response.text);
+      if (parsed.diversificationTip) diversificationTip = parsed.diversificationTip;
+      if (parsed.projectedRoas) projectedRoas = Number(parsed.projectedRoas);
+    } catch (e) {
+      console.warn("Gemini recommended-plan advice fallback:", e.message);
+    }
+  }
 
   res.json({
     recommendedShareA: shareA,
     recommendedShareB: shareB,
-    projectedRoas: 7.2,
+    projectedRoas,
     warning: null,
-    diversificationTip: "Strategy A continues to drive higher ROAS in your core zip codes. Maintaining 25% allocation to Strategy B keeps new local discovery alive.",
+    diversificationTip,
     strategyA: {
       id: "A",
       displayName: "Paid Local Velocity (Strategy A)",

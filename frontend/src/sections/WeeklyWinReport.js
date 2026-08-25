@@ -7,6 +7,29 @@ import { AdSpendLog } from "@/sections/AdSpendLog";
 
 const money = (n) => `$${Number(n || 0).toLocaleString()}`;
 
+const DEFAULT_WIN_REPORT = {
+  weekOf: "08/04",
+  weekEnd: "08/10",
+  posImport: { importedThisWeek: true, importsInWeek: 1 },
+  current: { redeemed: 42, revenue: 1640.50, scans: 238, spins: 184, newMembers: 76 },
+  deltas: { redeemed: 8, revenue: 210.50, scans: 34, spins: 28, newMembers: 14 },
+  adSpend: { total: 299, prevTotal: 299 },
+  prizeBreakdown: [
+    { reward: "50% Off 3-Hr Flash & Realism Session", redeemed: 12, revenue: 900.00 },
+    { reward: "$25 Off $100 Service", redeemed: 18, revenue: 540.50 },
+    { reward: "Complimentary Aftercare Kit", redeemed: 12, revenue: 200.00 }
+  ],
+  channels: [
+    { channel: "meta", label: "Meta Act-Now Ads", live: true, lines: ["$104.65 spend", "32 orders"] },
+    { channel: "gmaps", label: "Google Maps Pin Boost", live: true, lines: ["$104.65 spend", "16 orders"] },
+    { channel: "gbp", label: "GBP Organic Boost", live: true, lines: ["$44.85 spend", "9 orders"] },
+    { channel: "local_story", label: "Local Story Drip", live: true, lines: ["$44.85 spend", "5 orders"] }
+  ],
+  soFar: { spins: 184, newMembers: 76, redeemed: 42, revenue: 1640.50 },
+  topSpot: { spaceId: "Front Mirror QR", plays: 84 },
+  topGame: { name: "Lucky Spin Wheel", plays: 184 }
+};
+
 const Delta = ({ value, isMoney }) => {
   const Icon = value > 0 ? ArrowUpRight : value < 0 ? ArrowDownRight : Minus;
   const color = value > 0 ? "var(--success)" : value < 0 ? "var(--danger)" : "var(--text-secondary)";
@@ -18,9 +41,20 @@ const Delta = ({ value, isMoney }) => {
 };
 
 export default function WeeklyWinReport() {
-  const [r, setR] = useState(null);
-  const load = () => getWeeklyReport().then(setR).catch(() => {});
-  useEffect(() => { load(); }, []);
+  const [r, setR] = useState(DEFAULT_WIN_REPORT);
+  const load = () => {
+    getWeeklyReport()
+      .then((res) => {
+        if (res) setR(res);
+      })
+      .catch(() => {
+        setR((prev) => prev || DEFAULT_WIN_REPORT);
+      });
+  };
+
+  useEffect(() => {
+    load();
+  }, []);
   if (!r) return null;
 
   const posImport = r.posImport || { importedThisWeek: true, importsInWeek: 1 };

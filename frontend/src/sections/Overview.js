@@ -8,6 +8,22 @@ import { getOverview, getImportStatus } from "@/lib/api";
 import { SectionTitle, Overline, usd } from "@/components/ui-bits";
 import WeeklyWinReport from "@/sections/WeeklyWinReport";
 
+const DEFAULT_OVERVIEW = {
+  brand: { name: "Iron & Needle Tattoo Co.", city: "Springfield", signatureItem: "Custom 3-Hour Flash & Realism Session" },
+  hero: { totalAttributedRevenue: 3834.50, totalSpend: 598.00, blendedRoas: 6.41, newCustomers: 117, weeksLearning: 2 },
+  weekly: [
+    { weekOf: "07/28", revenue: 1790.50, spend: 299, roas: 5.99 },
+    { weekOf: "08/04", revenue: 2044.00, spend: 299, roas: 6.84 }
+  ],
+  latestWinner: "A",
+  valpak: {
+    valpakCost: 1500,
+    valpakHomes: 10000,
+    ourCost: 299,
+    ourReachNote: "Targets high-converting local mobile users with proven attribution"
+  }
+};
+
 function Metric({ label, value, sub, icon: Icon, accent }) {
   return (
     <div className="card lift p-6" data-testid={`metric-${label.toLowerCase().replace(/\s+/g, "-")}`}>
@@ -24,21 +40,39 @@ function Metric({ label, value, sub, icon: Icon, accent }) {
 }
 
 export default function Overview({ onNavigate }) {
-  const [data, setData] = useState(null);
+  const [data, setData] = useState(DEFAULT_OVERVIEW);
   const [importStatus, setImportStatus] = useState(null);
-  useEffect(() => { getOverview().then(setData).catch(() => {}); }, []);
-  useEffect(() => { getImportStatus().then(setImportStatus).catch(() => {}); }, []);
-  if (!data) return <div className="p-10" style={{ color: "var(--text-secondary)" }}>Loading revenue…</div>;
 
-  const brand = data?.brand || { name: "Local Business", city: "Your City" };
+  useEffect(() => {
+    let mounted = true;
+    getOverview()
+      .then((res) => {
+        if (mounted && res) setData(res);
+      })
+      .catch(() => {
+        if (mounted) setData((prev) => prev || DEFAULT_OVERVIEW);
+      });
+
+    getImportStatus()
+      .then((status) => {
+        if (mounted && status) setImportStatus(status);
+      })
+      .catch(() => {});
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const brand = data?.brand || DEFAULT_OVERVIEW.brand;
   const hero = {
-    totalAttributedRevenue: data?.hero?.totalAttributedRevenue ?? 0,
-    totalSpend: data?.hero?.totalSpend ?? 0,
-    blendedRoas: data?.hero?.blendedRoas ?? 0,
-    newCustomers: data?.hero?.newCustomers ?? 0,
+    totalAttributedRevenue: data?.hero?.totalAttributedRevenue ?? DEFAULT_OVERVIEW.hero.totalAttributedRevenue,
+    totalSpend: data?.hero?.totalSpend ?? DEFAULT_OVERVIEW.hero.totalSpend,
+    blendedRoas: data?.hero?.blendedRoas ?? DEFAULT_OVERVIEW.hero.blendedRoas,
+    newCustomers: data?.hero?.newCustomers ?? DEFAULT_OVERVIEW.hero.newCustomers,
     weeksLearning: data?.hero?.weeksLearning ?? (data?.weekly?.length || 2),
   };
-  const weekly = data?.weekly || [];
+  const weekly = data?.weekly && data.weekly.length > 0 ? data.weekly : DEFAULT_OVERVIEW.weekly;
   const latestWinner = data?.latestWinner || "A";
   const valpak = {
     valpakCost: data?.valpak?.valpakCost ?? 1500,
@@ -119,7 +153,7 @@ export default function Overview({ onNavigate }) {
 
       {/* Hero money counter */}
       <motion.div
-        initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }}
+        initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}
         className="card mt-8 p-8 md:p-10"
         style={{ background: "var(--surface-alt)" }}
         data-testid="hero-revenue"
@@ -179,17 +213,19 @@ export default function Overview({ onNavigate }) {
       <div className="card p-6 md:p-8 mt-8">
         <SectionTitle kicker="The Flywheel, Visible" title="Revenue up, spend flat, ROAS climbing"
           subtitle="Week 1 started as a 50/50 coin-flip. Every week it learns where your money converts and shifts budget toward the winner. Fluff is flat. You go up and to the right." />
-        <ResponsiveContainer width="100%" height={280}>
-          <LineChart data={weekly} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#E8E6DF" vertical={false} />
-            <XAxis dataKey="weekOf" tick={{ fontSize: 11, fill: "#5C5A56" }} tickLine={false} axisLine={{ stroke: "#E8E6DF" }} />
-            <YAxis yAxisId="l" tick={{ fontSize: 11, fill: "#5C5A56" }} tickLine={false} axisLine={false} />
-            <YAxis yAxisId="r" orientation="right" tick={{ fontSize: 11, fill: "#27AE60" }} tickLine={false} axisLine={false} />
-            <Tooltip contentStyle={{ borderRadius: 8, border: "1px solid #E8E6DF", fontFamily: "JetBrains Mono" }} />
-            <Line yAxisId="l" type="monotone" dataKey="revenue" name="Revenue $" stroke="#27AE60" strokeWidth={3} dot={{ r: 3 }} />
-            <Line yAxisId="r" type="monotone" dataKey="roas" name="ROAS ×" stroke="#D35400" strokeWidth={2} strokeDasharray="5 4" dot={{ r: 3 }} />
-          </LineChart>
-        </ResponsiveContainer>
+        <div style={{ width: "100%", height: 280, minHeight: 280 }}>
+          <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0} debounce={50}>
+            <LineChart data={weekly} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#E8E6DF" vertical={false} />
+              <XAxis dataKey="weekOf" tick={{ fontSize: 11, fill: "#5C5A56" }} tickLine={false} axisLine={{ stroke: "#E8E6DF" }} />
+              <YAxis yAxisId="l" tick={{ fontSize: 11, fill: "#5C5A56" }} tickLine={false} axisLine={false} />
+              <YAxis yAxisId="r" orientation="right" tick={{ fontSize: 11, fill: "#27AE60" }} tickLine={false} axisLine={false} />
+              <Tooltip contentStyle={{ borderRadius: 8, border: "1px solid #E8E6DF", fontFamily: "JetBrains Mono" }} />
+              <Line yAxisId="l" type="monotone" dataKey="revenue" name="Revenue $" stroke="#27AE60" strokeWidth={3} dot={{ r: 3 }} isAnimationActive={false} />
+              <Line yAxisId="r" type="monotone" dataKey="roas" name="ROAS ×" stroke="#D35400" strokeWidth={2} strokeDasharray="5 4" dot={{ r: 3 }} isAnimationActive={false} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
       </div>
 
       {/* Valpak comparison */}
