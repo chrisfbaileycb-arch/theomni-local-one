@@ -3472,6 +3472,19 @@ app.post('/api/email/send-welcome', (req, res) => {
 // STATIC SERVING (FRONTEND)
 // ---------------------------------------------------------------------------
 const buildPath = path.join(__dirname, 'frontend', 'build');
+const indexPath = path.join(buildPath, 'index.html');
+
+if (!fs.existsSync(indexPath)) {
+  try {
+    const { execSync } = require('child_process');
+    console.log('[OmniLocal #1] Frontend build missing. Building frontend bundle now...');
+    execSync('npm run build', { cwd: path.join(__dirname, 'frontend'), stdio: 'inherit' });
+    console.log('[OmniLocal #1] Frontend build completed successfully.');
+  } catch (e) {
+    console.warn('[OmniLocal #1] Frontend auto-build warning:', e.message);
+  }
+}
+
 app.use(express.static(buildPath));
 
 app.get('*', (req, res, next) => {
@@ -3480,7 +3493,6 @@ app.get('*', (req, res, next) => {
     return res.status(404).json({ error: 'Endpoint not found' });
   }
 
-  const indexPath = path.join(buildPath, 'index.html');
   if (fs.existsSync(indexPath)) {
     res.sendFile(indexPath, (err) => {
       if (err) {
