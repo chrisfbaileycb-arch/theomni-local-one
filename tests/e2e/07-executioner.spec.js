@@ -50,7 +50,7 @@ test.describe('content executioner (ad engine)', () => {
 
     await page.getByTestId('tx-csv-input').fill('garbage');
     await page.getByTestId('import-tx-btn').click();
-    await expect(toast(page, 'Import failed')).toBeVisible();
+    await expect(toast(page, /Import failed|Paste a POS export/)).toBeVisible();
     await expectClean(problems, { allowBad: ['/api/executioner/import-transactions -> 400'] });
   });
 

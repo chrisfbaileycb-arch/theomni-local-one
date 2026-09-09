@@ -3997,7 +3997,7 @@ You have access to tools that directly control the application. Always invoke th
     ["printstudio", /print|qr studio/], ["dashboard", /spin|voucher|wheel/], ["executioner", /executioner|ad engine|publisher/],
     ["maximizer", /maximizer|rewards|locations?/], ["content", /content director|brand|calendar/], ["team", /team|approvals?/], ["overview", /overview|command center|home/]
   ];
-  const navIntent = /\b(go to|navigate|open|show me|take me|jump to|switch to the|bring up)\b/.test(q);
+  const navIntent = /\b(go to|navigate to|take me to|jump to|show me the|open the|open up|bring up|switch to the)\b/.test(q);
   const navTarget = navIntent ? (NAV_TARGETS.find(([, re]) => re.test(q)) || [])[0] : null;
   if (navTarget) {
     matchedTool = { name: "navigate_view", args: { view: navTarget, reason: "Navigation requested by operator." } };

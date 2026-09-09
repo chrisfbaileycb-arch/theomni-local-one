@@ -70,13 +70,14 @@ test.describe('co-captain copilot sidebar', () => {
     await page.getByTestId('copilot-dismiss-btn').click();
     await expect(page.getByTestId('copilot-staged-action-card')).toHaveCount(0);
 
-    const [popup] = await Promise.all([
-      context.waitForEvent('page'),
+    // The export opens a new tab that streams a CSV download; assert the request the tab made.
+    const [exportReq] = await Promise.all([
+      context.waitForEvent('request', (r) => r.url().includes('/api/codes/export.csv')),
       page.getByTestId('test-export-codes-chip').click(),
     ]);
-    await popup.waitForLoadState();
-    expect(popup.url()).toContain('/api/codes/export.csv');
-    await popup.close();
+    const exportRes = await exportReq.response();
+    expect(exportRes.headers()['content-type']).toContain('text/csv');
+    for (const p of context.pages()) if (p !== page) await p.close().catch(() => {});
 
     await page.getByTestId('copilot-text-input').fill('Redeem the next open voucher code with $150 net sales');
     await page.getByTestId('copilot-send-btn').click();
