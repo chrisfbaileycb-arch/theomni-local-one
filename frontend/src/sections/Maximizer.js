@@ -146,8 +146,9 @@ export default function Maximizer() {
   };
 
   const changeRules = async (body) => {
+    setPlan((p) => ({ ...p, settings: { ...(p?.settings || {}), ...body } })); // optimistic
     let r;
-    try { r = await setGameSettings(body); } catch (e) { toast.error(e?.response?.data?.detail || "Could not update rules"); return; }
+    try { r = await setGameSettings(body); } catch (e) { toast.error(e?.response?.data?.detail || "Could not update rules"); loadPlan(); return; }
     setPlan((p) => ({ ...p, settings: r.settings }));
     getGames().then(setGames).catch(() => {});
     toast.success("Game rules updated");
