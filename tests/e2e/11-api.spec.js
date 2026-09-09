@@ -318,7 +318,8 @@ test.describe('API contract', () => {
     expect((await out.get('/api/maximizer/games')).ok()).toBeTruthy(); // public play page still works
     const team = await j(await request.get('/api/team'));
     const member = await playwright.request.newContext({ baseURL: process.env.BASE_URL || 'http://localhost:3000' });
-    await j(await member.post('/api/auth/login', { data: { email: 'stale-member@example.com', password: team.accessCode } }));
+    const staleEmail = `stale-${Date.now()}@example.com`; // unique: this member ends the test revoked
+    await j(await member.post('/api/auth/login', { data: { email: staleEmail, password: team.accessCode } }));
     expect((await member.get('/api/team')).status()).toBe(403);
     await j(await request.post('/api/team/rotate-code'));
     const locked = await member.get('/api/overview');
@@ -329,7 +330,7 @@ test.describe('API contract', () => {
     const newTeam = await j(await request.get('/api/team'));
     await j(await member.post('/api/auth/activate', { data: { code: newTeam.accessCode } }));
     expect((await member.get('/api/overview')).ok()).toBeTruthy();
-    const id = newTeam.members.find((m) => m.email === 'stale-member@example.com').user_id;
+    const id = newTeam.members.find((m) => m.email === staleEmail).user_id;
     await j(await request.post(`/api/team/member/${id}/revoke`));
     const rev = await member.get('/api/overview');
     expect([401, 403]).toContain(rev.status());

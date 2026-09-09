@@ -824,7 +824,7 @@ app.post('/api/auth/login', (req, res) => {
       return res.status(401).json({ detail: "The owner signs in with the master password, not the team code." });
     }
     if (!user) {
-      const seats = state.users.filter(u => u.role !== 'owner').length;
+      const seats = state.users.filter(u => u.role !== 'owner' && u.status !== 'revoked').length; // revoked members free their seat
       if (seats >= MAX_MEMBERS) return res.status(409).json({ detail: `All ${MAX_MEMBERS} team seats are taken. Ask the owner to free one.` });
       user = {
         user_id: `usr_${Date.now()}`,
@@ -888,7 +888,7 @@ function teamPayload() {
   const owner = state.users.find(u => u.role === 'owner') || state.users[0];
   const members = [owner, ...state.users.filter(u => u.user_id !== owner.user_id)]
     .map(u => ({ ...u, lockedOut: memberLockedOut(u) }));
-  const seatsUsed = members.length - 1;
+  const seatsUsed = members.filter(u => u.role !== 'owner' && u.status !== 'revoked').length;
   return {
     owner,
     members,
