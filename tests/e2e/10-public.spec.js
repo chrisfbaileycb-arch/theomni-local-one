@@ -7,6 +7,7 @@ test.describe('public scan-to-play page', () => {
     const page = await ctx.newPage();
     const problems = watchPage(page);
     const email = `guest-${Date.now()}@example.com`;
+    await page.request.put('/api/maximizer/game-settings', { data: { enabled: true } });
     await page.goto('/spin?space=Door%20Decal');
     await expect(page.getByTestId('spin-play')).toBeVisible();
     await expect(page.getByTestId('play-spin-btn')).toBeVisible();

@@ -2,6 +2,8 @@ const { test, expect } = require('./fixtures');
 const { watchPage, expectClean, openApp, goTo, toast, expectNoLeakedValues } = require('./helpers');
 
 async function openMaximizer(page) {
+  // Games must be running for the spin / QR flows; an earlier test may have paused them.
+  await page.request.put('/api/maximizer/game-settings', { data: { enabled: true } });
   await openApp(page);
   await goTo(page, 'maximizer');
   await expect(page.getByTestId('games-module')).toBeVisible();
