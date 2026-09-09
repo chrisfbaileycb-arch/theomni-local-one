@@ -1083,7 +1083,8 @@ app.get('/api/content/local-events', (req, res) => {
         id: "ev_1",
         category: "sports",
         daysAway: 2,
-        date: "Saturday 2:00 PM",
+        date: addDaysISO(new Date().toISOString().slice(0, 10), 2),
+        dateLabel: "Saturday 2:00 PM",
         title: "Regional High School Football Championship",
         venue: `${brand.city} Memorial Stadium`,
         distanceMiles: 1.2,
@@ -1097,7 +1098,8 @@ app.get('/api/content/local-events', (req, res) => {
         id: "ev_2",
         category: "festival",
         daysAway: 4,
-        date: "Sunday 11:00 AM",
+        date: addDaysISO(new Date().toISOString().slice(0, 10), 4),
+        dateLabel: "Sunday 11:00 AM",
         title: "Main Street Artisans & Food Crawl",
         venue: "Historic Downtown Plaza",
         distanceMiles: 0.4,
@@ -1293,14 +1295,18 @@ app.post('/api/campaign/cadence/rest', (req, res) => {
 
 app.post('/api/campaign/cadence/margin-floor', (req, res) => {
   const { maxDiscountPct, minSpendReq } = req.body || {};
+  const pct = Number(maxDiscountPct) || 30;
+  const min = Number(minSpendReq) || 50;
   if (state.game_settings) {
-    state.game_settings.maxDiscountPct = maxDiscountPct || 30;
-    state.game_settings.minSpendReq = minSpendReq || 50;
+    state.game_settings.maxDiscountPct = pct;
+    state.game_settings.minSpendReq = min;
   }
+  state.campaign_cadence = { ...state.campaign_cadence, marginFloor: { maxDiscountPct: pct, minSpendReq: min, updatedAt: new Date().toISOString() } };
   res.json({
     status: "ok",
-    message: `Margin Floor Tuned: Max discount capped at ${maxDiscountPct || 30}%, minimum spend requirement set to $${minSpendReq || 50}.`,
-    settings: state.game_settings
+    message: `Margin Floor Tuned: Max discount capped at ${pct}%, minimum spend requirement set to $${min}.`,
+    settings: state.game_settings,
+    cadence: state.campaign_cadence
   });
 });
 
@@ -3986,7 +3992,17 @@ You have access to tools that directly control the application. Always invoke th
   let matchedTool = null;
   let replyText = "";
 
-  if (q.includes("print") || q.includes("qr studio") || q.includes("sticker") || q.includes("table tent") || q.includes("seal") || q.includes("physical")) {
+  const NAV_TARGETS = [
+    ["multitrack", /multi-?track|campaign tracks|tracks view/], ["knowledge", /knowledge|maturity|moat/], ["attribution", /attribution|analytics|csv hub/],
+    ["printstudio", /print|qr studio/], ["dashboard", /spin|voucher|wheel/], ["executioner", /executioner|ad engine|publisher/],
+    ["maximizer", /maximizer|rewards|locations?/], ["content", /content director|brand|calendar/], ["team", /team|approvals?/], ["overview", /overview|command center|home/]
+  ];
+  const navIntent = /\b(go to|navigate|open|show me|take me|jump to|switch to the|bring up)\b/.test(q);
+  const navTarget = navIntent ? (NAV_TARGETS.find(([, re]) => re.test(q)) || [])[0] : null;
+  if (navTarget) {
+    matchedTool = { name: "navigate_view", args: { view: navTarget, reason: "Navigation requested by operator." } };
+    replyText = `Opening ${navTarget === "printstudio" ? "Print & QR Studio" : navTarget === "multitrack" ? "Multi-Track Campaigns" : navTarget}.`;
+  } else if (q.includes("print") || q.includes("qr studio") || q.includes("sticker") || q.includes("table tent") || q.includes("seal") || q.includes("physical")) {
     matchedTool = {
       name: "generate_print_asset",
       args: {

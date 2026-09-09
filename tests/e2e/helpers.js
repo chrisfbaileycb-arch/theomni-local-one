@@ -20,7 +20,10 @@ function watchPage(page) {
   });
   page.on('requestfailed', (req) => {
     const url = req.url();
-    if (url.includes('/api/')) problems.failedRequests.push(`${req.method()} ${url} (${req.failure()?.errorText})`);
+    const err = req.failure()?.errorText || '';
+    // <video> elements cancel their own range requests once metadata is read; that is not a failure.
+    if (err === 'net::ERR_ABORTED' && /\/video\//.test(url)) return;
+    if (url.includes('/api/')) problems.failedRequests.push(`${req.method()} ${url} (${err})`);
   });
   return problems;
 }

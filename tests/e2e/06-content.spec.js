@@ -176,7 +176,7 @@ test.describe('content director', () => {
     await page.getByTestId('brand-save-btn').click();
     await expect(toast(page, 'Brand')).toBeVisible();
     await page.reload();
-    await expect(page.locator('aside')).toContainText(`${original} E2E`);
+    await expect(page.locator('aside').filter({ hasText: 'Active Business' })).toContainText(`${original} E2E`);
     await goTo(page, 'content');
     await page.getByTestId('brand-edit-btn').click();
     await page.getByTestId('brand-brain').locator('input').first().fill(original);

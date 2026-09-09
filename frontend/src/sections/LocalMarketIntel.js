@@ -19,7 +19,7 @@ function EventRow({ ev, i, onAdd, added }) {
         </div>
         <div>
           <div className="mono text-xs" style={{ color: "var(--text-secondary)" }}>
-            {ev.daysAway === 0 ? "Today" : `in ${ev.daysAway} days`} · {ev.date}
+            {ev.daysAway === 0 ? "Today" : `in ${ev.daysAway} days`} · {ev.dateLabel || ev.date}
           </div>
           <div className="font-bold text-sm leading-tight mt-0.5">{ev.title}</div>
           <div className="text-xs mt-1 flex items-center gap-1" style={{ color: "var(--text-secondary)" }}>
@@ -62,13 +62,18 @@ export default function LocalMarketIntel({ onCalendarChange }) {
   useEffect(() => { getLocalEvents().then(setData).catch(() => {}); }, []);
 
   const addToCalendar = async (ev) => {
-    const d = new Date(ev.date);
-    d.setDate(d.getDate() - 1);
+    const d = new Date(`${ev.date}T00:00:00Z`);
+    if (Number.isNaN(d.getTime())) { toast.error("This event has no usable date yet."); return; }
+    d.setUTCDate(d.getUTCDate() - 1);
     const promoDate = d.toISOString().slice(0, 10);
-    const res = await addCalendarPost({ date: promoDate, title: `Promote: ${ev.title}`, surface: ev.channelLabel, time: "09:00", idea: ev.contentIdea });
-    setAdded((a) => ({ ...a, [ev.id]: true }));
-    onCalendarChange && onCalendarChange(res);
-    toast.success("Added to Content Calendar", { description: `${ev.title} promo scheduled for ${promoDate}` });
+    try {
+      const res = await addCalendarPost({ date: promoDate, title: `Promote: ${ev.title}`, surface: ev.channelLabel, time: "09:00", idea: ev.contentIdea });
+      setAdded((a) => ({ ...a, [ev.id]: true }));
+      onCalendarChange && onCalendarChange(res);
+      toast.success("Added to Content Calendar", { description: `${ev.title} promo scheduled for ${promoDate}` });
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Could not add this event to the calendar");
+    }
   };
 
   if (!data) return null;

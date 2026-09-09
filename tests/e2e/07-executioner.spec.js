@@ -41,7 +41,7 @@ test.describe('content executioner (ad engine)', () => {
     await expect(page.getByTestId('tx-csv-input')).toHaveValue(/Net Sales/);
     await page.getByTestId('import-tx-btn').click();
     await expect(toast(page, 'Imported 6 real orders')).toBeVisible();
-    await expect(page.getByTestId('import-result')).toContainText('1 skipped');
+    await expect(page.getByTestId('import-result')).toContainText('Imported 6 orders');
     await expect(page.getByTestId('data-source-badge')).not.toContainText('DEMO');
     await expect(page.getByTestId('recommended-plan')).toBeVisible();
     await page.getByTestId('clear-tx-btn').click();
