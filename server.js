@@ -3477,8 +3477,12 @@ const indexPath = path.join(buildPath, 'index.html');
 if (!fs.existsSync(indexPath)) {
   try {
     const { execSync } = require('child_process');
-    console.log('[OmniLocal #1] Frontend build missing. Building frontend bundle now...');
-    execSync('npm run build', { cwd: path.join(__dirname, 'frontend'), stdio: 'inherit' });
+    const frontendDir = path.join(__dirname, 'frontend');
+    console.log('[OmniLocal #1] Frontend build missing. Ensuring dependencies and building bundle...');
+    if (!fs.existsSync(path.join(frontendDir, 'node_modules', 'vite'))) {
+      execSync('npm install --legacy-peer-deps', { cwd: frontendDir, stdio: 'inherit' });
+    }
+    execSync('npm run build', { cwd: frontendDir, stdio: 'inherit' });
     console.log('[OmniLocal #1] Frontend build completed successfully.');
   } catch (e) {
     console.warn('[OmniLocal #1] Frontend auto-build warning:', e.message);
@@ -3497,13 +3501,13 @@ app.get('*', (req, res, next) => {
     res.sendFile(indexPath, (err) => {
       if (err) {
         if (!res.headersSent) {
-          res.send(`<!DOCTYPE html><html><head><title>OmniLocal #1</title></head><body style="font-family:sans-serif;padding:40px;background:#FDFCF8;"><h2>OmniLocal #1 Loading...</h2><p>Please refresh in a moment.</p></body></html>`);
+          res.send(`<!DOCTYPE html><html><head><meta http-equiv="refresh" content="3"><title>OmniLocal #1</title></head><body style="font-family:sans-serif;padding:40px;background:#FDFCF8;"><h2>OmniLocal #1 Loading...</h2><p>Auto-refreshing in 3 seconds...</p></body></html>`);
         }
       }
     });
   } else {
-    // If not built yet, serve a friendly fallback page
-    res.send(`<!DOCTYPE html><html><head><title>OmniLocal #1</title></head><body style="font-family:sans-serif;padding:40px;background:#FDFCF8;"><h2>Building OmniLocal #1 frontend...</h2><p>Please refresh in a moment.</p></body></html>`);
+    // If not built yet, serve a friendly fallback page that automatically retries
+    res.send(`<!DOCTYPE html><html><head><meta http-equiv="refresh" content="3"><title>OmniLocal #1</title></head><body style="font-family:sans-serif;padding:40px;background:#FDFCF8;"><h2>Initializing OmniLocal #1 frontend...</h2><p>Please wait a moment while the app initializes. Auto-refreshing...</p></body></html>`);
   }
 });
 

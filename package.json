@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "node server.js",
+    "postinstall": "cd frontend && npm install --legacy-peer-deps && npm run build",
     "build": "npm run build:frontend",
     "build:frontend": "cd frontend && npm install --legacy-peer-deps && npm run build",
     "lint": "node -e \"console.log('Lint ok')\"",
