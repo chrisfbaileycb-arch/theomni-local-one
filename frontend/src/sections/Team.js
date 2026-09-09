@@ -123,7 +123,7 @@ export default function Team() {
               Share this with a teammate to unlock a seat. Rotating it instantly locks out everyone
               until they enter the new code — perfect for ending a trial.
             </p>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <button data-testid="copy-code-btn" onClick={copyCode} className="btn btn-ghost flex items-center gap-2 text-sm">
                 {copied ? <Check size={14} /> : <Copy size={14} />} {copied ? "Copied" : "Copy"}
               </button>
@@ -237,7 +237,7 @@ export default function Team() {
                 </div>
               </div>
               {isOwner ? (
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   <button data-testid={`approve-${a.id}`} disabled={busyId === a.id} onClick={() => decide(a.id, true)}
                     className="btn btn-primary text-sm flex items-center gap-1.5">
                     <CheckCircle2 size={14} /> Approve & run

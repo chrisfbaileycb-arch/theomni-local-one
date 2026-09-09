@@ -64,15 +64,25 @@ export default function Maximizer() {
   }, []);
 
   const chooseGame = async (id) => {
-    const res = await setActiveGame(id);
+    let res;
+    try { res = await setActiveGame(id); } catch (e) { toast.error(e?.response?.data?.detail || "Could not change the game"); return; }
     setGames((g) => ({ ...g, active: res.active, override: res.override }));
-    toast.success(`Active game set: ${res.active.name}`);
+    if (res.active) toast.success(`Active game set: ${res.active.name}`);
+    else toast.message("Game pinned", { description: "Games are paused or this week is a rest week — the pin applies when they resume." });
   };
 
   const doSpin = async () => {
     setSpinning(true); setResult(null);
     setTimeout(async () => {
-      const res = await spin({ isNewGuest: guest.isNew, segment: guest.seg, spaceId: "admin-demo" });
+      let res;
+      try {
+        res = await spin({ isNewGuest: guest.isNew, segment: guest.seg, spaceId: "admin-demo" });
+      } catch (e) {
+        setSpinning(false);
+        const detail = e?.response?.data?.detail;
+        toast.error(typeof detail === "string" ? detail : "The game could not be played right now");
+        return;
+      }
       setResult(res); setSpinning(false);
       refreshLedger();
       toast[res.tier === "highValue" ? "success" : "message"](`${guest.label} won: ${res.reward}`,

@@ -130,7 +130,7 @@ export default function OperatorCopilot({
   onOpenChange
 }) {
   const brandName = brand?.name || "Iron & Needle Tattoo Co.";
-  const [isOpen, setIsOpen] = useState(true);
+  const [isOpen, setIsOpen] = useState(() => typeof window === "undefined" || window.innerWidth >= 1100); // start collapsed on narrow screens so the drawer never covers the page
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [voiceAudioEnabled, setVoiceAudioEnabled] = useState(true);

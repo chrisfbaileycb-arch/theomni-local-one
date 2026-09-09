@@ -4186,7 +4186,27 @@ app.get('/api/email/trickle-plan', (req, res) => {
 });
 
 app.post('/api/email/send-welcome', (req, res) => {
-  res.json({ status: "ok" });
+  const user = getUserFromReq(req);
+  const { index } = req.body || {};
+  const q = state.welcome_queue[Number(index)];
+  if (!q) return res.status(404).json({ detail: "Welcome queue entry not found." });
+  if (user && user.role !== 'owner') {
+    const approval = {
+      id: `appr_${Date.now()}`,
+      type: "send_welcome",
+      summary: `Send welcome video to ${q.name || q.email || q.phone}`,
+      requestedBy: user.name || user.email,
+      requestedByName: user.name || user.email,
+      requestedById: user.user_id,
+      payload: { index: Number(index) },
+      status: "pending",
+      createdAt: new Date().toISOString()
+    };
+    state.approvals.push(approval);
+    return res.json({ status: "pending_approval", approvalId: approval.id, note: "The owner will approve and send it from Team & Approvals." });
+  }
+  const result = markWelcomeSent(index);
+  res.json({ status: "ok", result, entry: q });
 });
 
 // ---------------------------------------------------------------------------

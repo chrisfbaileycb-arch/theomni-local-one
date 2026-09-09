@@ -68,8 +68,7 @@ test.describe('command center (overview) + weekly win report', () => {
     await openApp(page);
     const log = page.getByTestId('ad-spend-log');
     await expect(log).toBeVisible();
-    await page.getByTestId('ad-spend-add-btn').click();
-    await expect(toast(page, 'Enter an amount greater than $0')).toBeVisible();
+    await expect(page.getByTestId('ad-spend-add-btn')).toBeDisabled();
     await page.getByTestId('ad-spend-platform').selectOption({ index: 1 });
     await page.getByTestId('ad-spend-label').fill('E2E boost');
     await page.getByTestId('ad-spend-amount').fill('42.50');
@@ -80,7 +79,7 @@ test.describe('command center (overview) + weekly win report', () => {
     const id = (await entry.getAttribute('data-testid')).replace('ad-spend-entry-', '');
     await page.getByTestId(`ad-spend-delete-${id}`).click();
     await expect(entry).toHaveCount(0);
-    await expectClean(problems, { allowBad: ['/api/maximizer/ad-spend -> 400'] });
+    await expectClean(problems);
   });
 
   test('Monday report email settings save and "send now" records a send', async ({ page }) => {
