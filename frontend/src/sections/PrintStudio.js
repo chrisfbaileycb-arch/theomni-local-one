@@ -75,12 +75,17 @@ export default function PrintStudio() {
     window.print();
   };
 
-  const handleCopyLink = () => {
-    if (generated?.playUrl) {
-      navigator.clipboard.writeText(window.location.origin + generated.playUrl);
+  const handleCopyLink = async () => {
+    if (!generated?.playUrl) return;
+    const url = /^https?:\/\//.test(generated.playUrl) ? generated.playUrl : window.location.origin + generated.playUrl;
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("clipboard unavailable");
+      await navigator.clipboard.writeText(url);
       setCopiedUrl(true);
       toast.success("Campaign tracking URL copied to clipboard.");
       setTimeout(() => setCopiedUrl(false), 2000);
+    } catch {
+      toast(url, { description: "Copy blocked by the browser — here's the tracking URL." });
     }
   };
 

@@ -36,6 +36,7 @@ import {
   switchRestMode,
   tuneMarginFloor,
   voucherLookup,
+  issueClaimCode,
   redeemStaffVoucher,
   exportClaimCodesUrl,
   generateBatch
@@ -354,6 +355,16 @@ export default function Dashboard() {
       setShowCelebration(true);
       setSpinsRemaining((prev) => Math.max(0, prev - 1));
       setTotalSpinsToday((prev) => prev + 1);
+
+      // Register the claim code in the server ledger so staff lookup / 1-Click Redeem can verify it.
+      issueClaimCode({
+        code: serializedClaimCode,
+        reward: targetPrize.label,
+        masterPosCode: targetPrize.masterPosCode,
+        tier: targetPrize.tier,
+        value: targetPrize.value,
+        spaceId: "In-Store Wheel",
+      }).catch(() => toast.error("Could not register the claim code in the ledger"));
 
       setRewardsHistory((prev) => [newRewardItem, ...prev]);
       setVouchers((prev) => [{

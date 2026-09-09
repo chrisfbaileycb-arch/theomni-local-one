@@ -32,10 +32,19 @@ const NAV = [
   { id: "team", label: "Team & Approvals", icon: Users },
 ];
 
+// Views the Co-Captain may ask for that live inside another panel.
+const VIEW_ALIASES = {
+  locations: "maximizer", codes: "dashboard", brand: "content", adspend: "overview",
+  vouchers: "dashboard", spin: "dashboard", approvals: "team", pricing: "overview",
+};
+
 function App() {
-  const [active, setActive] = useState("overview");
+  const [activeRaw, setActiveRaw] = useState("overview");
+  const active = VIEW_ALIASES[activeRaw] || (NAV.some((n) => n.id === activeRaw) ? activeRaw : "overview");
+  const setActive = (id) => setActiveRaw(id);
   const [brand, setBrand] = useState(null);
   const [pendingCount, setPendingCount] = useState(0);
+  const [copilotOpen, setCopilotOpen] = useState(true);
   const { user, logout } = useAuth();
 
   useEffect(() => { getOverview().then((d) => setBrand(d.brand)).catch(() => {}); }, []);
@@ -154,12 +163,14 @@ function App() {
 
       {/* Main Content Area */}
       <main
-        className="flex-1 h-screen overflow-y-auto min-w-0"
+        className={`flex-1 h-screen overflow-y-auto min-w-0 ${copilotOpen ? "md:pr-[360px]" : ""}`}
+        data-testid="main-content"
         style={{
           flex: 1,
           height: "100vh",
           overflowY: "auto",
-          paddingBottom: "2rem"
+          paddingBottom: "2rem",
+          transition: "padding-right 0.25s ease"
         }}
       >
         {/* Mobile Navigation */}
@@ -199,7 +210,7 @@ function App() {
       </main>
 
       {/* Right Co-Captain Agent Sidebar */}
-      <OperatorCopilot activeTab={active} onNavigate={setActive} user={user} brand={brand} />
+      <OperatorCopilot activeTab={active} onNavigate={setActive} user={user} brand={brand} onOpenChange={setCopilotOpen} />
     </div>
   );
 }

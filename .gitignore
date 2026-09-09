@@ -99,3 +99,9 @@ frontend/node_modules/.cache/default-development/1.pack
 
 # Keep the environment template tracked
 !.env.example
+
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
