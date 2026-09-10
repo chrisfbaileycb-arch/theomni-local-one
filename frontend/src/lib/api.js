@@ -40,8 +40,8 @@ export const getOverview = () => client.get("/overview").then((r) => r.data);
 export const getPrompts = () => client.get("/content/prompts").then((r) => r.data);
 export const postCopy = (transcript) => client.post("/content/copy", { transcript }).then((r) => r.data);
 export const postCritic = (index) => client.post("/content/critic", { index }).then((r) => r.data);
-export const criticUploadInit = (filename) =>
-  client.post("/content/critic/upload/init", { filename }).then((r) => r.data);
+export const criticUploadInit = (filename, totalChunks) =>
+  client.post("/content/critic/upload/init", { filename, totalChunks }).then((r) => r.data);
 export const criticUploadChunk = (uploadId, index, chunk) => {
   const fd = new FormData();
   fd.append("uploadId", uploadId);
@@ -49,6 +49,8 @@ export const criticUploadChunk = (uploadId, index, chunk) => {
   fd.append("chunk", chunk, "chunk");
   return client.post("/content/critic/upload/chunk", fd).then((r) => r.data);
 };
+export const criticUploadFinalize = (uploadId) =>
+  client.post("/content/critic/upload/finalize", { uploadId }).then((r) => r.data);
 export const criticAnalyze = (uploadId, filename, templateId) =>
   client.post("/content/critic/analyze", { uploadId, filename, templateId: templateId || null }, { timeout: 180000 }).then((r) => r.data);
 export const criticVideoUrl = (videoUrl) => `${BACKEND_URL}${videoUrl}`;
@@ -210,4 +212,3 @@ export const updateDirectoryContacts = (contacts) =>
   client.post("/brand/contacts/update", contacts).then((r) => r.data);
 export const scheduleCampaign = (campaign) =>
   client.post("/campaigns/schedule", campaign).then((r) => r.data);
-

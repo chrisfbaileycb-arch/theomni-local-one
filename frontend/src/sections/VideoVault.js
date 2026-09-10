@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
 import { Clapperboard, Star, Trash2, Upload, CheckCircle2, Circle, Plus, Film } from "lucide-react";
-import { getVault, vaultSave, vaultDelete, vaultFeature, vaultVideoUrl, criticUploadInit, criticUploadChunk } from "@/lib/api";
+import { getVault, vaultSave, vaultDelete, vaultFeature, vaultVideoUrl, criticUploadInit, criticUploadChunk, criticUploadFinalize } from "@/lib/api";
 import { Overline } from "@/components/ui-bits";
 
 const CAT_LABEL = { tour: "Tour", menu: "Menu", kitchen: "Kitchen", intro: "Your Story", greeting: "Greeting", rewards: "Rewards", campaign: "Campaign" };
@@ -21,13 +21,14 @@ export const VideoVault = () => {
     if (!file) return;
     setUploading(promptId || "custom"); setPct(0);
     try {
-      const { uploadId } = await criticUploadInit(file.name);
       const CHUNK = 1024 * 1024;
       const total = Math.max(1, Math.ceil(file.size / CHUNK));
+      const { uploadId } = await criticUploadInit(file.name, total);
       for (let i = 0; i < total; i++) {
         await criticUploadChunk(uploadId, i, file.slice(i * CHUNK, (i + 1) * CHUNK));
         setPct(Math.round(((i + 1) / total) * 95));
       }
+      await criticUploadFinalize(uploadId);
       await vaultSave(uploadId, file.name, promptId || null, title || null);
       toast.success("Saved to your vault", { description: "Raw and real — exactly right." });
       setCustomTitle("");
