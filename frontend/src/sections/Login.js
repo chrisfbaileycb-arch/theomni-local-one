@@ -16,7 +16,11 @@ export default function Login() {
   const { apply } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
+  const [error, setError] = useState(() => {
+    const err = new URLSearchParams(window.location.search).get("auth_error");
+    if (err === "google_not_configured") return "Google sign-in isn't configured on this server yet. Owners can sign in with the master password below.";
+    return err ? "Sign-in failed. Please try again." : "";
+  });
   const [busy, setBusy] = useState(false);
 
   const signIn = () => {

@@ -27,6 +27,12 @@ export const getApprovals = () => client.get("/approvals").then((r) => r.data);
 export const approveRequest = (id) => client.post(`/approvals/${id}/approve`).then((r) => r.data);
 export const rejectRequest = (id, reason) => client.post(`/approvals/${id}/reject`, { reason }).then((r) => r.data);
 
+// Memory core (owner): health, backup, restore, reset
+export const getHealth = () => client.get("/health").then((r) => r.data);
+export const backupUrl = () => `${API}/admin/backup`;
+export const restoreBackup = (snapshot) => client.post("/admin/restore", { snapshot }).then((r) => r.data);
+export const resetMemoryCore = () => client.post("/admin/reset", { confirm: "RESET" }).then((r) => r.data);
+
 // Command Center
 export const getOverview = () => client.get("/overview").then((r) => r.data);
 
@@ -141,6 +147,7 @@ export const getPrizeBoard = () => client.get("/maximizer/prize-board").then((r)
 export const setPrizeBoard = (body) => client.put("/maximizer/prize-board", body).then((r) => r.data);
 export const getSpinQr = (spaceId, base) =>
   client.get("/maximizer/spin/qr", { params: { spaceId, base } }).then((r) => r.data);
+export const issueClaimCode = (body) => client.post("/codes/issue", body).then((r) => r.data);
 export const redeemCode = (code, netSales) =>
   client.post("/maximizer/redeem", { code, netSales }).then((r) => r.data);
 export const getRedemptionsDashboard = () =>

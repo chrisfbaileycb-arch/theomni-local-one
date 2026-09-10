@@ -64,15 +64,25 @@ export default function Maximizer() {
   }, []);
 
   const chooseGame = async (id) => {
-    const res = await setActiveGame(id);
+    let res;
+    try { res = await setActiveGame(id); } catch (e) { toast.error(e?.response?.data?.detail || "Could not change the game"); return; }
     setGames((g) => ({ ...g, active: res.active, override: res.override }));
-    toast.success(`Active game set: ${res.active.name}`);
+    if (res.active) toast.success(`Active game set: ${res.active.name}`);
+    else toast.message("Game pinned", { description: "Games are paused or this week is a rest week — the pin applies when they resume." });
   };
 
   const doSpin = async () => {
     setSpinning(true); setResult(null);
     setTimeout(async () => {
-      const res = await spin({ isNewGuest: guest.isNew, segment: guest.seg, spaceId: "admin-demo" });
+      let res;
+      try {
+        res = await spin({ isNewGuest: guest.isNew, segment: guest.seg, spaceId: "admin-demo" });
+      } catch (e) {
+        setSpinning(false);
+        const detail = e?.response?.data?.detail;
+        toast.error(typeof detail === "string" ? detail : "The game could not be played right now");
+        return;
+      }
       setResult(res); setSpinning(false);
       refreshLedger();
       toast[res.tier === "highValue" ? "success" : "message"](`${guest.label} won: ${res.reward}`,
@@ -88,7 +98,12 @@ export default function Maximizer() {
 
   const doRedeem = async () => {
     if (!redeemInput.trim()) { toast.error("Enter a coupon code"); return; }
-    const res = await redeemCode(redeemInput.trim(), redeemNet ? parseFloat(redeemNet) : null);
+    let res;
+    try {
+      res = await redeemCode(redeemInput.trim(), redeemNet ? parseFloat(redeemNet) : null);
+    } catch (e) {
+      res = { ok: false, status: "error", reason: e?.response?.data?.detail || e?.response?.data?.reason || "Could not reach the redemption service" };
+    }
     setRedeemResult(res);
     if (res.ok) {
       toast.success(`Redeemed: ${res.reward}`);
@@ -101,29 +116,39 @@ export default function Maximizer() {
 
   const loadSampleCustomers = async () => { const { csv } = await getSampleCustomerCsv(); setCsv(csv); toast("Weekly customer export loaded"); };
   const runImport = async () => {
-    const r = await importCustomerCsv(csv);
-    setImportRes(r); await loadWelcome(); loadMembers();
-    toast.success(`Imported ${r.imported} — ${r.newCustomersQueued} new customers queued for welcome video`);
+    try {
+      const r = await importCustomerCsv(csv);
+      setImportRes(r); await loadWelcome(); loadMembers(); refreshLedger();
+      toast.success(`Imported ${r.imported} new · ${r.updated} updated — ${r.newCustomersQueued} new customers queued for welcome video`);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Could not import that CSV");
+    }
   };
   const triggerWelcome = async (i) => {
-    const r = await sendWelcome(i);
-    if (r.status === "pending_approval") {
-      toast.info("Sent to owner for approval", { description: r.note });
-      return;
+    try {
+      const r = await sendWelcome(i);
+      if (r.status === "pending_approval") {
+        toast.info("Sent to owner for approval", { description: r.note });
+        return;
+      }
+      await loadWelcome();
+      toast.success("Welcome video email triggered", { description: `Mode: ${r.result?.status} · headers: ${Object.keys(r.result?.headers || {}).join(", ")}` });
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Could not send the welcome video");
     }
-    await loadWelcome();
-    toast.success("Welcome video email triggered", { description: `Mode: ${r.result.status} · headers: ${Object.keys(r.result.headers || {}).join(", ")}` });
   };
 
   const pickWeek = async (weekStart, gameId) => {
-    await setGameWeek(weekStart, gameId);
+    try { await setGameWeek(weekStart, gameId); } catch (e) { toast.error(e?.response?.data?.detail || "Could not update the plan"); return; }
     await loadPlan();
     getGames().then(setGames).catch(() => {});
     toast.success("Game plan updated");
   };
 
   const changeRules = async (body) => {
-    const r = await setGameSettings(body);
+    setPlan((p) => ({ ...p, settings: { ...(p?.settings || {}), ...body } })); // optimistic
+    let r;
+    try { r = await setGameSettings(body); } catch (e) { toast.error(e?.response?.data?.detail || "Could not update rules"); loadPlan(); return; }
     setPlan((p) => ({ ...p, settings: r.settings }));
     getGames().then(setGames).catch(() => {});
     toast.success("Game rules updated");

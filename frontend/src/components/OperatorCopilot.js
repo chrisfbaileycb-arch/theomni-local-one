@@ -41,7 +41,9 @@ import {
   updateDirectoryContacts,
   scheduleCampaign,
   stageHumanApproval,
-  redeemStaffVoucher
+  approveRequest,
+  redeemStaffVoucher,
+  applyPreset,
 } from "@/lib/api";
 
 // Synthesis tone for audio response (Web Audio API TTS + SpeechSynthesis fallback)
@@ -124,10 +126,11 @@ export default function OperatorCopilot({
   activeTab,
   onNavigate,
   user,
-  brand
+  brand,
+  onOpenChange
 }) {
   const brandName = brand?.name || "Iron & Needle Tattoo Co.";
-  const [isOpen, setIsOpen] = useState(true);
+  const [isOpen, setIsOpen] = useState(() => typeof window === "undefined" || window.innerWidth >= 1100); // start collapsed on narrow screens so the drawer never covers the page
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [voiceAudioEnabled, setVoiceAudioEnabled] = useState(true);
@@ -138,6 +141,7 @@ export default function OperatorCopilot({
   const [stagedAction, setStagedAction] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [showToolsRegistry, setShowToolsRegistry] = useState(false);
+  useEffect(() => { if (typeof onOpenChange === "function") onOpenChange(isOpen); }, [isOpen, onOpenChange]);
   const [registeredTools, setRegisteredTools] = useState([]);
   const [lastExecutedTool, setLastExecutedTool] = useState(null);
   const [conversationHistory, setConversationHistory] = useState([]);
@@ -526,7 +530,8 @@ export default function OperatorCopilot({
             meta: { amount: args.amount || 299.0 }
           });
           setStagedAction({
-            id: `action_${Date.now()}`,
+            id: res?.approval?.id || `action_${Date.now()}`,
+            serverId: res?.approval?.id || null,
             type: "STAGED_APPROVAL",
             payload: {
               title: args.title || "Live Ad Spend Commitment",
@@ -584,11 +589,12 @@ export default function OperatorCopilot({
             `Switching business vertical preset to '${args.verticalId}'`,
             "info"
           );
+          await applyPreset(args.verticalId);
           onNavigate && onNavigate("brand");
           logStep(
             "Step 3 (Execution)",
             "Brand Profile Vertical Updated",
-            `Loaded presets and prize boards for ${args.verticalId.toUpperCase()}`,
+            `Loaded presets and prize boards for ${String(args.verticalId).toUpperCase()}`,
             "success"
           );
           playChime("success");
@@ -731,14 +737,19 @@ export default function OperatorCopilot({
     );
 
     try {
-      await stageHumanApproval({
-        title: stagedAction.payload.title,
-        description: stagedAction.payload.description,
-        category: "ad_spend",
-        meta: { amount: stagedAction.payload.amount || 299.0 }
-      });
+      if (stagedAction.serverId) {
+        await approveRequest(stagedAction.serverId);
+      } else {
+        const staged = await stageHumanApproval({
+          title: stagedAction.payload.title,
+          description: stagedAction.payload.description,
+          category: "ad_spend",
+          meta: { amount: stagedAction.payload.amount || 299.0 }
+        });
+        if (staged?.approval?.id) await approveRequest(staged.approval.id);
+      }
       playChime("success");
-      toast.success("Action dispatched and logged!");
+      toast.success("Action approved and logged in Team & Approvals");
       speakWithState("Action approved and locked into production.");
       setStagedAction(null);
       await refreshTelemetry();
@@ -1262,7 +1273,7 @@ export default function OperatorCopilot({
                       <button
                         onClick={() =>
                           processCommand(
-                            "Redeem voucher code TAT50-PROMO with $150 net sales"
+                            "Redeem the next open voucher code with $150 net sales"
                           )
                         }
                         className="px-2 py-1 rounded bg-emerald-600/30 hover:bg-emerald-600/50 text-emerald-300 text-[9.5px] font-mono border border-emerald-500/30"

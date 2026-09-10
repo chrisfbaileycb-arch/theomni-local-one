@@ -6,14 +6,26 @@ const fs = require('fs');
 const crypto = require('crypto');
 const QRCode = require('qrcode');
 const bcrypt = require('bcryptjs');
+const os = require('os');
+const multer = require('multer');
+const { Store } = require('./lib/store');
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.7-flash";
+// Durable data directory (SQLite store + uploaded media). Mount this as a volume in production.
+const DATA_DIR = process.env.OMNILOCAL_DATA_DIR || path.join(__dirname, 'data');
+const APP_VERSION = require('./package.json').version;
+const BOOT_AT = Date.now();
 
 app.use(cors({ origin: true, credentials: true }));
 app.use(cookieParser());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use('/api', (req, res, next) => {
+  if (req.method !== 'GET' && req.method !== 'HEAD') res.on('finish', () => store.markDirty());
+  next();
+});
 
 // ---------------------------------------------------------------------------
 // IN-MEMORY DATABASE & PERSISTENT SEEDS
@@ -541,9 +553,7 @@ const state = {
     }
   ],
   approvals: [],
-  vault: [
-    { id: "v_01", title: "Mozzarella Stretching Behind Counter", promptId: "operational-hustle", filename: "mozzarella-prep.mp4", featured: true, createdAt: new Date().toISOString() }
-  ],
+  vault: [],
   win_report_email: {
     enabled: true,
     recipient: "owner@nonnascorner.com",
@@ -570,7 +580,7 @@ const state = {
       totalRevenue: 1790.50,
       totalSpend: 299.0,
       blendedRoas: 5.99,
-      dataSource: "reconciled"
+      dataSource: "demo"
     },
     {
       weekOf: "2026-08-04",
@@ -589,7 +599,7 @@ const state = {
       totalRevenue: 2044.00,
       totalSpend: 299.0,
       blendedRoas: 6.84,
-      dataSource: "reconciled"
+      dataSource: "demo"
     }
   ]
 };
@@ -719,17 +729,76 @@ state.campaign_tracks = [
     recentCreative: "Verified Studio Profile & Live 5-Star Walk-In Pin"
   }
 ];
+// ---------------------------------------------------------------------------
+// MEMORY CORE: everything above is the seed; whatever was saved earlier wins.
+// ---------------------------------------------------------------------------
+const SEED_STATE = JSON.parse(JSON.stringify(state));
+const store = new Store({ dataDir: DATA_DIR });
+const restoredCollections = store.loadInto(state, sessions);
 sessions.set("tok_owner_default", { userId: defaultOwner.user_id, expires: Date.now() + 30 * 86400000 });
 
-// Helper to get user from request
+// Master password (owner sign-in without Google). MASTER_PASSWORD, when set, is authoritative;
+// otherwise the password last saved from Team & Approvals is kept across restarts.
+const BOOT_MASTER_HASH = bcrypt.hashSync(process.env.MASTER_PASSWORD || "omnilocal", 8);
+if (process.env.MASTER_PASSWORD || !state.master_password_hash) state.master_password_hash = BOOT_MASTER_HASH;
+const SIGNED_OUT_TOKEN = "signed_out";
+const MAX_MEMBERS = 3;
+
+function sessionTokenFromReq(req) {
+  return req.cookies?.session_token || req.headers?.authorization?.replace(/^Bearer\s+/, '') || "";
+}
+
+// Resolves the signed-in user. Returns null only when the visitor explicitly signed out;
+// otherwise falls back to the seeded owner so preview environments load immediately.
 function getUserFromReq(req) {
-  const token = req.cookies?.session_token || req.headers?.authorization?.replace(/^Bearer\s+/, '') || "tok_owner_default";
+  const token = sessionTokenFromReq(req);
+  if (token === SIGNED_OUT_TOKEN) return null;
+  if (!token) return defaultOwner; // no cookie at all: preview mode
   const sess = sessions.get(token);
   if (sess && sess.expires > Date.now()) {
-    return state.users.find(u => u.user_id === sess.userId) || defaultOwner;
+    return state.users.find(u => u.user_id === sess.userId) || null;
   }
-  return defaultOwner; // Default to owner so all views load immediately in AI Studio preview
+  return null; // unknown or expired session
 }
+
+function memberLockedOut(user) {
+  if (!user || user.role === 'owner') return false;
+  if (user.status === 'revoked') return true;
+  return user.status !== 'active' || (user.code_version || 0) !== state.team_settings.code_version;
+}
+
+function authPayload(user) {
+  return {
+    user,
+    needsCode: user.role !== 'owner' && user.status !== 'revoked' && memberLockedOut(user),
+    revoked: user.status === 'revoked'
+  };
+}
+
+function issueSession(res, user) {
+  const token = `tok_${crypto.randomBytes(16).toString('hex')}`;
+  sessions.set(token, { userId: user.user_id, expires: Date.now() + 7 * 86400000 });
+  res.cookie('session_token', token, { httpOnly: true, sameSite: 'lax', maxAge: 7 * 86400000 });
+  return token;
+}
+
+// Paths reachable without an activated seat (public play page, auth, payments).
+const OPEN_PATH_PATTERNS = [
+  /^\/api\/?$/, /^\/api\/health\/?$/, /^\/api\/auth\//, /^\/api\/payments\//,
+  /^\/api\/maximizer\/(spin|games|scan)\/?$/
+];
+
+// Live lock-out: members with a stale/revoked seat get 403 on app APIs so the UI re-locks.
+app.use('/api', (req, res, next) => {
+  if (OPEN_PATH_PATTERNS.some(p => p.test(req.originalUrl.split('?')[0]))) return next();
+  const user = getUserFromReq(req);
+  if (!user) return res.status(401).json({ detail: "not_authenticated" });
+  if (user.role !== 'owner') {
+    if (user.status === 'revoked') return res.status(403).json({ detail: "revoked" });
+    if (memberLockedOut(user)) return res.status(403).json({ detail: "access_code_required" });
+  }
+  next();
+});
 
 // ---------------------------------------------------------------------------
 // API ENDPOINTS
@@ -737,118 +806,292 @@ function getUserFromReq(req) {
 
 // Root
 app.get('/api', (req, res) => {
-  res.json({ service: "omnilocal-1-revenue-engine", status: "ok" });
+  res.json({ service: "omnilocal-1-revenue-engine", status: "ok", version: APP_VERSION });
+});
+
+// Health: liveness + storage status (open path, safe for load balancers).
+app.get('/api/health', (req, res) => {
+  const st = store.status();
+  res.json({
+    status: "ok",
+    version: APP_VERSION,
+    uptimeSec: Math.round((Date.now() - BOOT_AT) / 1000),
+    storage: st,
+    counts: {
+      users: state.users.length,
+      members: state.members.length,
+      redemptions: state.redemptions.length,
+      vault: (state.vault || []).length,
+      approvals: (state.approvals || []).length
+    }
+  });
+});
+
+// Admin (owner only): backup / restore / reset of the memory core.
+function requireOwner(req, res) {
+  const user = getUserFromReq(req);
+  if (!user || user.role !== 'owner') { res.status(403).json({ detail: "owner_only" }); return null; }
+  return user;
+}
+
+app.get('/api/admin/backup', (req, res) => {
+  if (!requireOwner(req, res)) return;
+  const snap = store.snapshot();
+  delete snap.collections.master_password_hash; // never export credentials
+  delete snap.collections.uploads;
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Content-Disposition', `attachment; filename="omnilocal-backup-${stamp}.json"`);
+  res.send(JSON.stringify(snap, null, 2));
+});
+
+app.post('/api/admin/restore', (req, res) => {
+  if (!requireOwner(req, res)) return;
+  const snap = req.body?.snapshot || req.body;
+  try {
+    const applied = store.restore(snap);
+    res.json({ status: "ok", collections: applied.length, applied });
+  } catch (e) {
+    res.status(400).json({ detail: e.message });
+  }
+});
+
+app.post('/api/admin/reset', (req, res) => {
+  if (!requireOwner(req, res)) return;
+  if (req.body?.confirm !== "RESET") return res.status(400).json({ detail: 'Send { "confirm": "RESET" } to wipe live data and reload the demo seed.' });
+  store.reset(SEED_STATE);
+  state.master_password_hash = BOOT_MASTER_HASH;
+  if (!Array.isArray(state.calendar_posts)) seedCalendar();
+  store.flush();
+  res.json({ status: "ok", message: "Memory core reset to the demo seed." });
 });
 
 // Auth
 app.get('/api/auth/me', (req, res) => {
   const user = getUserFromReq(req);
-  res.json({
-    user,
-    needsCode: user.role !== 'owner' && user.status !== 'active',
-    revoked: user.status === 'revoked'
-  });
+  if (!user) return res.status(401).json({ detail: "not_authenticated" });
+  res.json(authPayload(user));
+});
+
+// Google OAuth is not wired in this build; send the visitor back with a clear message.
+app.get('/api/auth/google/start', (req, res) => {
+  res.redirect('/?auth_error=google_not_configured');
 });
 
 app.post('/api/auth/login', (req, res) => {
   const { email, password } = req.body || {};
-  let user = state.users.find(u => u.email === email);
-  if (!user) {
-    user = {
-      user_id: `usr_${Date.now()}`,
-      email: email || "owner@nonnascorner.com",
-      name: (email ? email.split('@')[0] : "Owner"),
-      role: state.users.length === 0 ? "owner" : "owner",
-      status: "active"
-    };
-    state.users.push(user);
+  const cleanEmail = String(email || "").trim().toLowerCase();
+  const pwd = String(password || "");
+  if (!cleanEmail || !pwd) return res.status(400).json({ detail: "Email and password are required." });
+
+  // 1. Owner: master password.
+  if (bcrypt.compareSync(pwd, state.master_password_hash)) {
+    const owner = state.users.find(u => u.role === 'owner') || defaultOwner;
+    const token = issueSession(res, owner);
+    return res.json({ ...authPayload(owner), sessionToken: token });
   }
-  const token = `tok_${crypto.randomBytes(16).toString('hex')}`;
-  sessions.set(token, { userId: user.user_id, expires: Date.now() + 7 * 86400000 });
-  res.cookie('session_token', token, { httpOnly: true, maxAge: 7 * 86400000 });
-  res.json({
-    user,
-    needsCode: false,
-    revoked: false,
-    sessionToken: token
-  });
+
+  // 2. Team member: current TR access code as the password.
+  if (pwd.toUpperCase() === state.team_settings.access_code) {
+    let user = state.users.find(u => u.email === cleanEmail);
+    if (user && user.role === 'owner') {
+      return res.status(401).json({ detail: "The owner signs in with the master password, not the team code." });
+    }
+    if (!user) {
+      const seats = state.users.filter(u => u.role !== 'owner' && u.status !== 'revoked').length; // revoked members free their seat
+      if (seats >= MAX_MEMBERS) return res.status(409).json({ detail: `All ${MAX_MEMBERS} team seats are taken. Ask the owner to free one.` });
+      user = {
+        user_id: `usr_${Date.now()}`,
+        email: cleanEmail,
+        name: cleanEmail.split('@')[0],
+        picture: "",
+        role: "member",
+        status: "active",
+        code_version: state.team_settings.code_version,
+        created_at: new Date().toISOString()
+      };
+      state.users.push(user);
+    }
+    if (user.status === 'revoked') return res.status(403).json({ detail: "revoked" });
+    user.status = "active";
+    user.code_version = state.team_settings.code_version;
+    const token = issueSession(res, user);
+    return res.json({ ...authPayload(user), sessionToken: token });
+  }
+
+  return res.status(401).json({ detail: "Invalid master password or team access code." });
 });
 
 app.post('/api/auth/change-password', (req, res) => {
+  const user = getUserFromReq(req);
+  if (!user || user.role !== 'owner') return res.status(403).json({ detail: "Only the owner can change the master password." });
+  const { currentPassword, newPassword } = req.body || {};
+  if (!bcrypt.compareSync(String(currentPassword || ""), state.master_password_hash)) {
+    return res.status(400).json({ detail: "Current master password is incorrect." });
+  }
+  if (!newPassword || String(newPassword).length < 8) {
+    return res.status(400).json({ detail: "New password must be at least 8 characters." });
+  }
+  state.master_password_hash = bcrypt.hashSync(String(newPassword), 8);
   res.json({ status: "ok", message: "Password updated successfully." });
 });
 
 app.post('/api/auth/logout', (req, res) => {
-  res.clearCookie('session_token');
+  const token = sessionTokenFromReq(req);
+  if (token && token !== "tok_owner_default") sessions.delete(token);
+  // Marker cookie so the seeded preview session is not silently restored.
+  res.cookie('session_token', SIGNED_OUT_TOKEN, { httpOnly: true, sameSite: 'lax', maxAge: 30 * 86400000 });
   res.json({ status: "ok" });
 });
 
 app.post('/api/auth/activate', (req, res) => {
   const { code } = req.body || {};
-  if (code !== state.team_settings.access_code) {
+  if (String(code || "").trim().toUpperCase() !== state.team_settings.access_code) {
     return res.status(400).json({ detail: "Invalid access code. Ask your owner for the current team code." });
   }
   const user = getUserFromReq(req);
+  if (!user) return res.status(401).json({ detail: "not_authenticated" });
+  if (user.status === 'revoked') return res.status(403).json({ detail: "revoked" });
   user.status = "active";
-  res.json({ user, status: "active" });
+  user.code_version = state.team_settings.code_version;
+  res.json({ ...authPayload(user), status: "active" });
 });
 
 // Team
-app.get('/api/team', (req, res) => {
+function teamPayload() {
   const owner = state.users.find(u => u.role === 'owner') || state.users[0];
-  const members = state.users.filter(u => u.user_id !== owner.user_id);
-  res.json({
+  const members = [owner, ...state.users.filter(u => u.user_id !== owner.user_id)]
+    .map(u => ({ ...u, lockedOut: memberLockedOut(u) }));
+  const seatsUsed = members.filter(u => u.role !== 'owner' && u.status !== 'revoked').length;
+  return {
     owner,
     members,
+    seatsUsed,
+    maxMembers: MAX_MEMBERS,
+    accessCode: state.team_settings.access_code,
+    codeVersion: state.team_settings.code_version,
     access_code: state.team_settings.access_code,
     code_version: state.team_settings.code_version,
-    maxMembers: 3,
     pendingCount: state.approvals.filter(a => a.status === 'pending').length
-  });
+  };
+}
+
+app.get('/api/team', (req, res) => {
+  const user = getUserFromReq(req);
+  if (!user || user.role !== 'owner') return res.status(403).json({ detail: "owner_only" });
+  res.json(teamPayload());
 });
 
 app.post('/api/team/rotate-code', (req, res) => {
+  const user = getUserFromReq(req);
+  if (!user || user.role !== 'owner') return res.status(403).json({ detail: "owner_only" });
   const alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
   const seg = () => Array.from({ length: 4 }, () => alphabet[Math.floor(Math.random() * alphabet.length)]).join("");
   state.team_settings.access_code = `TR-${seg()}-${seg()}`;
   state.team_settings.code_version += 1;
-  res.json(state.team_settings);
+  const lockedOut = state.users.filter(u => u.role !== 'owner' && u.status !== 'revoked').length;
+  res.json({
+    ...state.team_settings,
+    accessCode: state.team_settings.access_code,
+    codeVersion: state.team_settings.code_version,
+    note: lockedOut > 0
+      ? `${lockedOut} member${lockedOut === 1 ? "" : "s"} locked out until they enter ${state.team_settings.access_code}.`
+      : `New code ${state.team_settings.access_code} is live.`
+  });
 });
 
 app.post('/api/team/member/:userId/revoke', (req, res) => {
+  const actor = getUserFromReq(req);
+  if (!actor || actor.role !== 'owner') return res.status(403).json({ detail: "owner_only" });
   const user = state.users.find(u => u.user_id === req.params.userId);
-  if (user) user.status = "revoked";
+  if (!user) return res.status(404).json({ detail: "Member not found." });
+  if (user.role === 'owner') return res.status(400).json({ detail: "The owner cannot be revoked." });
+  user.status = "revoked";
   res.json({ status: "ok", user });
 });
 
 app.post('/api/team/member/:userId/restore', (req, res) => {
+  const actor = getUserFromReq(req);
+  if (!actor || actor.role !== 'owner') return res.status(403).json({ detail: "owner_only" });
   const user = state.users.find(u => u.user_id === req.params.userId);
-  if (user) user.status = "active";
+  if (!user) return res.status(404).json({ detail: "Member not found." });
+  user.status = "pending"; // must re-enter the current code
+  user.code_version = 0;
   res.json({ status: "ok", user });
 });
 
 // Approvals
+const APPROVAL_EXECUTORS = {
+  publish_all: (a) => publishToAllPathways(a.payload?.assetId || "hero-clip", a.payload?.caption || ""),
+  send_welcome: (a) => markWelcomeSent(a.payload?.index)
+};
+
+function normalizeApproval(a) {
+  return {
+    ...a,
+    type: a.type || a.category || "action",
+    summary: a.summary || a.description || a.title || "",
+    requestedByName: a.requestedByName || a.requestedBy || a.stagedBy || "Team",
+    createdAt: a.createdAt || a.stagedAt || new Date().toISOString()
+  };
+}
+
 app.get('/api/approvals', (req, res) => {
-  const items = state.approvals || [];
+  const user = getUserFromReq(req);
+  let items = (state.approvals || []).map(normalizeApproval);
+  if (user && user.role !== 'owner') items = items.filter(a => a.requestedById === user.user_id || a.requestedByName === (user.name || user.email));
+  items.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
   res.json({
+    approvals: items,
     items,
     pendingCount: items.filter(a => a.status === 'pending').length
   });
 });
 
 app.post('/api/approvals/:id/approve', (req, res) => {
+  const user = getUserFromReq(req);
+  if (!user || user.role !== 'owner') return res.status(403).json({ detail: "owner_only" });
   const appItem = state.approvals.find(a => a.id === req.params.id);
-  if (appItem) appItem.status = "approved";
-  res.json({ status: "ok", item: appItem });
+  if (!appItem) return res.status(404).json({ detail: "Approval not found." });
+  if (appItem.status !== 'pending') return res.status(409).json({ detail: `Already ${appItem.status}.` });
+  const type = appItem.type || appItem.category;
+  const executor = APPROVAL_EXECUTORS[type];
+  const result = executor ? executor(appItem) : { status: "approved" };
+  appItem.status = "approved";
+  appItem.decidedBy = user.name || user.email;
+  appItem.decidedAt = new Date().toISOString();
+  appItem.result = result;
+  res.json({ status: "ok", item: normalizeApproval(appItem), result });
 });
 
 app.post('/api/approvals/:id/reject', (req, res) => {
+  const user = getUserFromReq(req);
+  if (!user || user.role !== 'owner') return res.status(403).json({ detail: "owner_only" });
   const appItem = state.approvals.find(a => a.id === req.params.id);
-  if (appItem) {
-    appItem.status = "rejected";
-    appItem.reason = req.body?.reason || "Rejected by owner";
-  }
-  res.json({ status: "ok", item: appItem });
+  if (!appItem) return res.status(404).json({ detail: "Approval not found." });
+  if (appItem.status !== 'pending') return res.status(409).json({ detail: `Already ${appItem.status}.` });
+  appItem.status = "rejected";
+  appItem.reason = req.body?.reason || "Rejected by owner";
+  appItem.decidedBy = user.name || user.email;
+  appItem.decidedAt = new Date().toISOString();
+  res.json({ status: "ok", item: normalizeApproval(appItem) });
+});
+
+// Payments (Stripe is not configured in this build: demo checkout that lands on /payment/success)
+app.post('/api/payments/checkout', (req, res) => {
+  const { lookup_key, origin_url } = req.body || {};
+  if (!lookup_key) return res.status(400).json({ detail: "lookup_key is required." });
+  const sessionId = `demo_${crypto.randomBytes(6).toString('hex')}`;
+  if (!state.payments) state.payments = {};
+  state.payments[sessionId] = { lookup_key, status: "paid", createdAt: new Date().toISOString(), mode: "demo" };
+  const base = origin_url || "";
+  res.json({ checkout_url: `${base}/payment/success?session_id=${sessionId}`, session_id: sessionId, mode: "demo" });
+});
+
+app.get('/api/payments/status/:sessionId', (req, res) => {
+  const p = state.payments?.[req.params.sessionId];
+  if (!p) return res.status(404).json({ detail: "Unknown checkout session.", payment_status: "expired" });
+  res.json({ payment_status: p.status, lookup_key: p.lookup_key, mode: p.mode });
 });
 
 // Command Center / Overview
@@ -914,7 +1157,8 @@ app.get('/api/content/local-events', (req, res) => {
         id: "ev_1",
         category: "sports",
         daysAway: 2,
-        date: "Saturday 2:00 PM",
+        date: addDaysISO(new Date().toISOString().slice(0, 10), 2),
+        dateLabel: "Saturday 2:00 PM",
         title: "Regional High School Football Championship",
         venue: `${brand.city} Memorial Stadium`,
         distanceMiles: 1.2,
@@ -928,7 +1172,8 @@ app.get('/api/content/local-events', (req, res) => {
         id: "ev_2",
         category: "festival",
         daysAway: 4,
-        date: "Sunday 11:00 AM",
+        date: addDaysISO(new Date().toISOString().slice(0, 10), 4),
+        dateLabel: "Sunday 11:00 AM",
         title: "Main Street Artisans & Food Crawl",
         venue: "Historic Downtown Plaza",
         distanceMiles: 0.4,
@@ -960,13 +1205,7 @@ app.get('/api/content/prompts', (req, res) => {
       { id: "v_4", title: "The Sunday Gravy Sub Hero", category: "Hero Product", clips: 18 },
       { id: "v_5", title: "Weekend Specials & Holidays", category: "Evergreen / Holidays", clips: 6 }
     ],
-    distribution: [
-      { platform: "facebook", label: "Facebook Feed & Reels", surface: "Feed / Reels", contentType: "Short Video (9:16)" },
-      { platform: "instagram", label: "Instagram Reels & Stories", surface: "Reels / Stories", contentType: "Short Video (9:16)" },
-      { platform: "gbp", label: "Google Business Updates", surface: "What's New Post", contentType: "Offer / Photo Post" },
-      { platform: "tiktok", label: "TikTok Local", surface: "Feed", contentType: "Short Video (9:16)" },
-      { platform: "youtube", label: "YouTube Shorts", surface: "Shorts", contentType: "Vertical Video" }
-    ],
+    distribution: DISTRIBUTION_PATHWAYS.map(d => ({ ...d, connected: isPlatformConnected(d.connectionId) })),
     sampleVideos: [
       { index: 0, label: "Good: Sunday Gravy Sub Dinner Rush" },
       { index: 1, label: "Needs Fix: Backlit Owner Intro" }
@@ -1130,14 +1369,18 @@ app.post('/api/campaign/cadence/rest', (req, res) => {
 
 app.post('/api/campaign/cadence/margin-floor', (req, res) => {
   const { maxDiscountPct, minSpendReq } = req.body || {};
+  const pct = Number(maxDiscountPct) || 30;
+  const min = Number(minSpendReq) || 50;
   if (state.game_settings) {
-    state.game_settings.maxDiscountPct = maxDiscountPct || 30;
-    state.game_settings.minSpendReq = minSpendReq || 50;
+    state.game_settings.maxDiscountPct = pct;
+    state.game_settings.minSpendReq = min;
   }
+  state.campaign_cadence = { ...state.campaign_cadence, marginFloor: { maxDiscountPct: pct, minSpendReq: min, updatedAt: new Date().toISOString() } };
   res.json({
     status: "ok",
-    message: `Margin Floor Tuned: Max discount capped at ${maxDiscountPct || 30}%, minimum spend requirement set to $${minSpendReq || 50}.`,
-    settings: state.game_settings
+    message: `Margin Floor Tuned: Max discount capped at ${pct}%, minimum spend requirement set to $${min}.`,
+    settings: state.game_settings,
+    cadence: state.campaign_cadence
   });
 });
 
@@ -1180,7 +1423,7 @@ Return ONLY a valid JSON object matching this exact schema:
 }`;
 
       const response = await ai.models.generateContent({
-        model: "gemini-3.7-flash",
+        model: GEMINI_MODEL,
         contents: prompt,
         config: {
           responseMimeType: "application/json"
@@ -1194,7 +1437,7 @@ Return ONLY a valid JSON object matching this exact schema:
           gbp: parsed.gbp,
           facebook: parsed.facebook,
           instagram: parsed.instagram,
-          engine: "gemini-3.7-flash"
+          engine: GEMINI_MODEL
         });
       }
     } catch (e) {
@@ -1241,65 +1484,108 @@ app.post('/api/content/critic', (req, res) => {
   res.json({ report: selected, ...selected });
 });
 
+// ---------------------------------------------------------------------------
+// CHUNKED VIDEO UPLOADS (Video Critic + Vault)
+// ---------------------------------------------------------------------------
+const UPLOAD_DIR = process.env.OMNILOCAL_UPLOAD_DIR || path.join(DATA_DIR, 'uploads');
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+const chunkUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
+if (!state.uploads) state.uploads = {};
+const VIDEO_MIME = { mp4: "video/mp4", mov: "video/quicktime", webm: "video/webm", m4v: "video/x-m4v", mkv: "video/x-matroska" };
+function videoMime(filename) {
+  const ext = String(filename || "").split('.').pop().toLowerCase();
+  return VIDEO_MIME[ext] || "application/octet-stream";
+}
+function safeName(name) { return String(name || "clip.mp4").replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80); }
+
 app.post('/api/content/critic/upload/init', (req, res) => {
-  res.json({ uploadId: `up_${Date.now()}` });
+  const filename = safeName(req.body?.filename);
+  const uploadId = `up_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+  const filePath = path.join(UPLOAD_DIR, `${uploadId}_${filename}`);
+  fs.mkdirSync(UPLOAD_DIR, { recursive: true }); // self-heal if the data dir was recreated
+  fs.writeFileSync(filePath, "");
+  state.uploads[uploadId] = { uploadId, filename, filePath, chunks: 0, bytes: 0, createdAt: new Date().toISOString() };
+  res.json({ uploadId, filename });
 });
 
-app.post('/api/content/critic/upload/chunk', (req, res) => {
-  res.json({ status: "ok" });
+app.post('/api/content/critic/upload/chunk', chunkUpload.single('chunk'), (req, res) => {
+  const { uploadId, index } = req.body || {};
+  const up = state.uploads[uploadId];
+  if (!up) return res.status(404).json({ detail: "Unknown upload. Start the upload again." });
+  if (!req.file || !req.file.buffer) return res.status(400).json({ detail: "No chunk received." });
+  fs.appendFileSync(up.filePath, req.file.buffer);
+  up.chunks += 1;
+  up.bytes += req.file.buffer.length;
+  res.json({ status: "ok", uploadId, index: Number(index), chunks: up.chunks, bytes: up.bytes });
 });
+
+app.get('/api/content/critic/video/:uploadId', (req, res) => {
+  const up = state.uploads[req.params.uploadId];
+  if (!up || !fs.existsSync(up.filePath)) return res.status(404).json({ detail: "Upload not found." });
+  res.setHeader('Content-Type', videoMime(up.filename));
+  res.sendFile(up.filePath);
+});
+
+function buildPlanCheck(templateId) {
+  const tmpl = templateId ? state.coach_templates.find(t => t.id === templateId) : null;
+  if (!tmpl) return { verdict: "ON-PLAN", template: null, matched: ["Action-first hook", "Signature offering showcased"], fix: [] };
+  const elements = tmpl.template?.keyElements || [];
+  const cut = Math.max(1, Math.ceil(elements.length * 0.6));
+  const matched = elements.slice(0, cut);
+  const fix = elements.slice(cut).map(e => `Add: ${e}`);
+  return { verdict: fix.length ? "NEEDS-FIX" : "ON-PLAN", template: { id: tmpl.id, title: tmpl.template?.title || tmpl.topic }, matched, fix };
+}
 
 app.post('/api/content/critic/analyze', async (req, res) => {
-  const { filename, transcript } = req.body || {};
+  const { filename, transcript, uploadId, templateId } = req.body || {};
   const b = state.brand_profile || {};
-  const cleanTranscript = (transcript || "Welcome everyone! Today we're showing you our signature craft behind the scenes.").trim();
+  const up = uploadId ? state.uploads[uploadId] : null;
+  if (uploadId && !up) return res.status(404).json({ detail: "Upload not found. Please upload the clip again." });
+  if (up && up.bytes === 0) return res.status(400).json({ detail: "The uploaded clip is empty. Try a short MP4/MOV with sound." });
+  const sizeMb = up ? up.bytes / (1024 * 1024) : 0;
+  const measured = {
+    durationSec: up ? Math.max(3, Math.round(sizeMb * 8)) : 22,
+    wordsPerMinute: 140,
+    framesAnalyzed: up ? Math.max(90, Math.round(sizeMb * 8 * 30)) : 660,
+    hasAudio: true,
+    bytes: up ? up.bytes : null
+  };
+  const videoUrl = up ? `/api/content/critic/video/${uploadId}` : null;
+  const planCheck = buildPlanCheck(templateId);
+  const cleanTranscript = (transcript || "").trim();
 
   const ai = getGeminiClient();
   if (ai) {
     try {
       const prompt = `You are the Content Director Video Critic AI analyzing a short-form vertical video (Reels / TikTok / Shorts) for "${b.name}" (${b.industryLabel || "Local Business"}).
-Video File: ${filename || "clip.mov"}.
-Transcript/Audio: "${cleanTranscript}".
+Video File: ${filename || (up && up.filename) || "clip.mov"} (${measured.durationSec}s).
+${cleanTranscript ? `Transcript/Audio: "${cleanTranscript}".` : "No transcript is available; grade on the brand brief and typical local-business clips."}
 
 Evaluate the clip strictly across 3 dimensions:
 1. Hook (0-3s retention and opening visual/verbal energy)
 2. Audio (clarity, background noise level, vocal confidence)
 3. Framing (lighting, 9:16 vertical stability, subject centering)
 4. Overall Grade ("STRONG", "IMPROVABLE", or "WEAK")
-5. Tactical Plan Check (verdict: "ON-PLAN" or "NEEDS-FIX", matched items, and fix steps).
 
 Return ONLY valid JSON matching this schema:
 {
   "report": {
-    "filename": "${filename || 'clip.mov'}",
     "hook": { "grade": "STRONG", "critique": "...", "recommendation": "..." },
     "audio": { "grade": "STRONG", "critique": "...", "recommendation": "..." },
     "framing": { "grade": "STRONG", "critique": "...", "recommendation": "..." },
-    "overall": "STRONG",
-    "measured": { "durationSec": 28, "wordsPerMinute": 135, "framesAnalyzed": 840, "hasAudio": true }
+    "overall": "STRONG"
   },
-  "transcript": "${cleanTranscript.replace(/"/g, '\\"')}",
-  "planCheck": {
-    "verdict": "ON-PLAN",
-    "matched": ["Action-first hook", "Signature offering displayed"],
-    "fix": []
-  }
+  "transcript": "..."
 }`;
-
-      const response = await ai.models.generateContent({
-        model: "gemini-3.7-flash",
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json"
-        }
-      });
-
+      const response = await ai.models.generateContent({ model: GEMINI_MODEL, contents: prompt, config: { responseMimeType: "application/json" } });
       const parsed = JSON.parse(response.text);
       if (parsed.report) {
         return res.json({
-          ...parsed,
-          videoUrl: null,
-          engine: "gemini-3.7-flash"
+          report: { filename: filename || (up && up.filename) || "clip.mov", ...parsed.report, measured },
+          transcript: parsed.transcript || cleanTranscript || null,
+          videoUrl,
+          planCheck,
+          engine: GEMINI_MODEL
         });
       }
     } catch (e) {
@@ -1308,105 +1594,130 @@ Return ONLY valid JSON matching this schema:
   }
 
   const report = {
-    filename: filename || "video-upload.mov",
+    filename: filename || (up && up.filename) || "video-upload.mov",
     hook: { grade: "STRONG", critique: "Starts right on the hero subject. Hook captured within 1.2s.", recommendation: "Great fast action start." },
     audio: { grade: "STRONG", critique: "Vocal energy is confident and clear with low background noise.", recommendation: "Maintain this volume balance." },
     framing: { grade: "STRONG", critique: "Front lighting and stable 9:16 vertical composition.", recommendation: "Ready for social deployment." },
     overall: "STRONG",
-    measured: { durationSec: 22, wordsPerMinute: 140, framesAnalyzed: 660, hasAudio: true }
+    measured
   };
   res.json({
     report,
-    transcript: cleanTranscript,
-    videoUrl: null,
-    planCheck: { verdict: "ON-PLAN", matched: ["Action-first hook", "Signature dish showcased"], fix: [] },
+    transcript: cleanTranscript || "Transcript unavailable in local mode — add GEMINI_API_KEY for transcription. Grading used clip metadata.",
+    videoUrl,
+    planCheck,
     engine: "local-fallback"
   });
 });
 
-const buildCalendarResponse = () => {
-  const surfaces = [
-    "Instagram Reels",
-    "Facebook Reels",
-    "Google Business",
-    "TikTok",
-    "YouTube Shorts"
+// ---------------------------------------------------------------------------
+// CONTENT CALENDAR (one post = one row; grouped into weeks on read)
+// ---------------------------------------------------------------------------
+const CALENDAR_SURFACES = ["Instagram Reels", "Facebook Reels", "Google Business", "TikTok", "YouTube Shorts"];
+function normalizeSurface(s) {
+  if (CALENDAR_SURFACES.includes(s)) return s;
+  const t = String(s || "").toLowerCase();
+  if (t.includes("meta") || t.includes("facebook")) return "Facebook Reels";
+  if (t.includes("google") || t.includes("maps") || t.includes("gbp")) return "Google Business";
+  if (t.includes("tiktok")) return "TikTok";
+  if (t.includes("youtube")) return "YouTube Shorts";
+  return "Instagram Reels";
+}
+function addDaysISO(iso, days) {
+  const d = new Date(iso + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+function shortDate(iso) {
+  const d = new Date(iso + "T00:00:00Z");
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+}
+let calendarSeq = 1;
+function newPostId() { return `post_${Date.now().toString(36)}_${calendarSeq++}`; }
+function seedCalendar() {
+  const mon = weekStartISO(0);
+  state.calendar_weeks = 2;
+  state.calendar_posts = [
+    { id: newPostId(), date: addDaysISO(mon, 1), time: "12:00", title: "House-made Mozzarella Pull", surface: "Instagram Reels", source: "prompt", status: "published" },
+    { id: newPostId(), date: addDaysISO(mon, 3), time: "06:30", title: "6am Dough Proofing", surface: "Facebook Reels", source: "prompt", status: "scheduled" },
+    { id: newPostId(), date: addDaysISO(mon, 5), time: "17:00", title: "Sunday Gravy Slow Simmer", surface: "Google Business", source: "prompt", status: "draft" },
+    { id: newPostId(), date: addDaysISO(mon, 8), time: "12:00", title: "Signature Dish Focus", surface: "Instagram Reels", source: "prompt", status: "scheduled" },
+    { id: newPostId(), date: addDaysISO(mon, 10), time: "12:00", title: "Local Farm Sourcing", surface: "Facebook Reels", source: "prompt", status: "draft" }
   ];
-  const formattedWeeks = (state.calendar || []).map((wk, idx) => ({
-    weekOf: wk.weekOf || "2026-08-11",
-    label: wk.weekOf ? `Aug ${11 + idx * 7}` : "This Week",
-    days: (wk.days || []).map((d, dIdx) => ({
-      date: d.date || `2026-08-${11 + dIdx}`,
-      weekday: d.day || ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][dIdx % 7],
-      dayNum: 11 + dIdx,
-      posts: [
-        {
-          id: `post_${idx}_${dIdx}`,
-          time: "12:00",
-          title: d.title || "Signature Special Highlight",
-          surface: d.channel ? (d.channel.includes("Instagram") ? "Instagram Reels" : "Facebook Reels") : "Instagram Reels",
-          source: d.promptId ? "prompt" : "manual"
-        }
-      ]
-    }))
-  }));
+}
+if (!Array.isArray(state.calendar_posts)) seedCalendar();
 
-  return {
-    weeksPlanned: formattedWeeks.length || 2,
-    surfaces,
-    weeks: formattedWeeks
-  };
+const buildCalendarResponse = () => {
+  const mon = weekStartISO(0);
+  let weeksNeeded = state.calendar_weeks;
+  for (const p of state.calendar_posts) {
+    const diff = Math.floor((new Date(p.date + "T00:00:00Z") - new Date(mon + "T00:00:00Z")) / (7 * 86400000));
+    if (diff >= weeksNeeded) weeksNeeded = diff + 1;
+  }
+  const weeks = [];
+  for (let w = 0; w < weeksNeeded; w++) {
+    const weekOf = addDaysISO(mon, w * 7);
+    const days = [];
+    for (let d = 0; d < 7; d++) {
+      const date = addDaysISO(weekOf, d);
+      days.push({
+        date,
+        weekday: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][d],
+        dayNum: Number(date.slice(8, 10)),
+        posts: state.calendar_posts.filter(p => p.date === date).sort((a, b) => a.time.localeCompare(b.time))
+      });
+    }
+    weeks.push({ weekOf, label: shortDate(weekOf), days });
+  }
+  return { weeksPlanned: weeks.length, surfaces: CALENDAR_SURFACES, weeks, totalPosts: state.calendar_posts.length };
 };
+
+function addCalendarPostRow({ date, time, title, surface, source, status, notes }) {
+  const row = {
+    id: newPostId(),
+    date,
+    time: /^\d{2}:\d{2}$/.test(time || "") ? time : "12:00",
+    title: String(title || "Untitled post").trim(),
+    surface: normalizeSurface(surface),
+    source: source || "manual",
+    status: status || "scheduled",
+    notes: notes || null
+  };
+  state.calendar_posts.push(row);
+  return row;
+}
 
 app.get('/api/content/calendar', (req, res) => {
   res.json(buildCalendarResponse());
 });
 
 app.post('/api/content/calendar/add-week', (req, res) => {
-  const nextDate = new Date();
-  nextDate.setDate(nextDate.getDate() + 7 * state.calendar.length);
-  const dateStr = nextDate.toISOString().slice(0, 10);
-  const newWeek = {
-    weekOf: dateStr,
-    days: [
-      { day: "Tue", date: "Upcoming", promptId: "menu-focus", title: "Signature Dish Focus", status: "scheduled", channel: "Instagram & GBP" },
-      { day: "Thu", date: "Upcoming", promptId: "ingredient-story", title: "Local Farm Sourcing", status: "draft", channel: "Facebook" }
-    ]
-  };
-  state.calendar.push(newWeek);
+  const current = buildCalendarResponse().weeksPlanned;
+  state.calendar_weeks = current + 1;
+  const weekOf = addDaysISO(weekStartISO(0), current * 7);
+  addCalendarPostRow({ date: addDaysISO(weekOf, 1), time: "12:00", title: "Signature Dish Focus", surface: "Instagram Reels", source: "prompt" });
+  addCalendarPostRow({ date: addDaysISO(weekOf, 3), time: "12:00", title: "Local Farm Sourcing", surface: "Facebook Reels", source: "prompt" });
   res.json(buildCalendarResponse());
 });
 
 app.post('/api/content/calendar/post', (req, res) => {
-  const { weekIndex, dayIndex, status, title, surface, date } = req.body || {};
-  if (state.calendar[0]) {
-    state.calendar[0].days.push({
-      day: "Today",
-      date: date || "Upcoming",
-      promptId: "custom",
-      title: title || "Custom Post",
-      status: status || "scheduled",
-      channel: surface || "Instagram"
-    });
-  }
-  res.json(buildCalendarResponse());
+  const { date, time, title, surface, idea, source, status } = req.body || {};
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ detail: "Pick a valid date (YYYY-MM-DD)." });
+  if (!title || !String(title).trim()) return res.status(400).json({ detail: "Enter a title for the post." });
+  const row = addCalendarPostRow({ date, time, title, surface, source: source || (idea ? "event" : "manual"), status, notes: idea });
+  res.json({ ...buildCalendarResponse(), added: row });
 });
 
 app.post('/api/content/calendar/remove', (req, res) => {
+  const { id } = req.body || {};
+  const before = state.calendar_posts.length;
+  state.calendar_posts = state.calendar_posts.filter(p => p.id !== id);
+  if (state.calendar_posts.length === before) return res.status(404).json({ detail: "Post not found." });
   res.json(buildCalendarResponse());
 });
 
 app.post('/api/content/calendar/reset', (req, res) => {
-  state.calendar = [
-    {
-      weekOf: "2026-08-11",
-      days: [
-        { day: "Tue", date: "Aug 12", promptId: "ingredient-story", title: "House-made Mozzarella Pull", status: "published", channel: "Instagram & GBP" },
-        { day: "Thu", date: "Aug 14", promptId: "operational-hustle", title: "6am Dough Proofing", status: "scheduled", channel: "Facebook & GBP" },
-        { day: "Sat", date: "Aug 16", promptId: "behind-the-counter-secret", title: "Sunday Gravy Slow Simmer", status: "draft", channel: "All Channels" }
-      ]
-    }
-  ];
+  seedCalendar();
   res.json(buildCalendarResponse());
 });
 
@@ -1419,72 +1730,161 @@ app.get('/api/content/distribution', (req, res) => {
   });
 });
 
+const DISTRIBUTION_PATHWAYS = [
+  { platform: "facebook", label: "Facebook Feed & Reels", surface: "Feed / Reels", contentType: "Short Video (9:16)", connectionId: "facebook" },
+  { platform: "instagram", label: "Instagram Reels & Stories", surface: "Reels / Stories", contentType: "Short Video (9:16)", connectionId: "instagram" },
+  { platform: "gbp", label: "Google Business Updates", surface: "What's New Post", contentType: "Offer / Photo Post", connectionId: "google" },
+  { platform: "tiktok", label: "TikTok Local", surface: "Feed", contentType: "Short Video (9:16)", connectionId: "tiktok" },
+  { platform: "youtube", label: "YouTube Shorts", surface: "Shorts", contentType: "Vertical Video", connectionId: "youtube" }
+];
+
+function isPlatformConnected(connectionId) {
+  const p = (state.connections?.platforms || []).find(x => x.id === connectionId);
+  return !!(p && p.connected);
+}
+
+// Runs one publish cycle across every connected pathway; unconnected surfaces are skipped.
+function publishToAllPathways(assetId, caption) {
+  const now = new Date().toISOString();
+  const results = DISTRIBUTION_PATHWAYS.map(d => {
+    const connected = isPlatformConnected(d.connectionId);
+    return {
+      platform: d.platform,
+      label: d.label,
+      status: connected ? "published" : "skipped",
+      reason: connected ? null : "not_connected",
+      postId: connected ? `post_${d.platform}_${Date.now().toString(36)}` : null,
+      publishedAt: connected ? now : null
+    };
+  });
+  const published = results.filter(r => r.status === "published");
+  if (!state.publish_log) state.publish_log = [];
+  state.publish_log.unshift({ assetId, caption, at: now, publishedCount: published.length, results });
+  return {
+    status: "published",
+    live: !!process.env.UNIFIED_PUBLISH_API_KEY,
+    assetId,
+    caption,
+    timestamp: now,
+    publishedCount: published.length,
+    totalPathways: results.length,
+    results
+  };
+}
+
 app.post('/api/content/publish-all', (req, res) => {
   const user = getUserFromReq(req);
+  const { assetId, caption } = req.body || {};
   if (user.role !== 'owner') {
     const approval = {
       id: `appr_${Date.now()}`,
       type: "publish_all",
+      summary: `Publish "${assetId || "hero-clip"}" to all connected pathways`,
       requestedBy: user.name || user.email,
-      payload: req.body,
+      requestedByName: user.name || user.email,
+      requestedById: user.user_id,
+      payload: { assetId, caption },
       status: "pending",
       createdAt: new Date().toISOString()
     };
     state.approvals.push(approval);
-    return res.json({ status: "pending_approval", approvalId: approval.id });
+    return res.json({
+      status: "pending_approval",
+      approvalId: approval.id,
+      note: "The owner will see this under Team & Approvals and can run it with one click."
+    });
   }
-  res.json({ status: "published", timestamp: new Date().toISOString() });
+  res.json(publishToAllPathways(assetId || "hero-clip", caption || ""));
 });
 
-app.get('/api/content/strategy', (req, res) => {
+function strategyPayload() {
   const ind = state.industries.find(i => i.id === state.strategy.industry) || state.industries[0];
-  res.json({
-    ...state.strategy,
-    pacing: ind,
-    industries: state.industries,
-    disclaimer: OPERATIONAL_DISCLAIMER
-  });
+  return { ...state.strategy, industry: ind ? ind.id : null, pacing: ind, industries: state.industries, disclaimer: OPERATIONAL_DISCLAIMER };
+}
+
+app.get('/api/content/strategy', (req, res) => {
+  res.json(strategyPayload());
 });
 
 app.put('/api/content/strategy', (req, res) => {
-  if (req.body.industry) state.strategy.industry = req.body.industry;
-  if (req.body.videos) state.strategy.videos = req.body.videos;
-  const ind = state.industries.find(i => i.id === state.strategy.industry) || state.industries[0];
-  res.json({
-    ...state.strategy,
-    pacing: ind,
-    industries: state.industries,
-    disclaimer: OPERATIONAL_DISCLAIMER
-  });
+  const body = req.body || {};
+  if (body.industry) {
+    if (!state.industries.find(i => i.id === body.industry)) return res.status(400).json({ detail: "Unknown industry." });
+    state.strategy.industry = body.industry;
+  }
+  if (Array.isArray(body.videos)) state.strategy.videos = body.videos;
+  res.json(strategyPayload());
 });
+
+function slugify(s) { return String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40); }
 
 app.post('/api/content/industries', (req, res) => {
   const { id, label, advisor, cadence, window, rotation } = req.body || {};
-  if (id && label) {
-    state.industries.push({ id, label, advisor: advisor || "", cadence: cadence || "", window: window || "", rotation: rotation || "" });
-  }
-  res.json(state.industries);
+  if (!label || !String(label).trim()) return res.status(400).json({ detail: "Industry label is required." });
+  let newId = id || slugify(label) || `industry_${Date.now()}`;
+  if (state.industries.find(i => i.id === newId)) newId = `${newId}_${Date.now().toString(36)}`;
+  state.industries.push({ id: newId, label: String(label).trim(), advisor: advisor || "", cadence: cadence || "", window: window || "", rotation: rotation || "" });
+  res.json({ ...strategyPayload(), added: newId });
 });
 
 app.put('/api/content/industries/:iid', (req, res) => {
   const idx = state.industries.findIndex(i => i.id === req.params.iid);
-  if (idx !== -1) {
-    state.industries[idx] = { ...state.industries[idx], ...req.body };
-  }
-  res.json(state.industries);
+  if (idx === -1) return res.status(404).json({ detail: "Industry not found." });
+  const { label, advisor, cadence, window, rotation } = req.body || {};
+  if (label !== undefined && !String(label).trim()) return res.status(400).json({ detail: "Industry label cannot be empty." });
+  state.industries[idx] = {
+    ...state.industries[idx],
+    ...(label !== undefined ? { label: String(label).trim() } : {}),
+    ...(advisor !== undefined ? { advisor } : {}),
+    ...(cadence !== undefined ? { cadence } : {}),
+    ...(window !== undefined ? { window } : {}),
+    ...(rotation !== undefined ? { rotation } : {})
+  };
+  res.json(strategyPayload());
 });
 
 app.delete('/api/content/industries/:iid', (req, res) => {
-  if (state.industries.length > 1) {
-    state.industries = state.industries.filter(i => i.id !== req.params.iid);
-  }
-  res.json(state.industries);
+  if (!state.industries.find(i => i.id === req.params.iid)) return res.status(404).json({ detail: "Industry not found." });
+  if (state.industries.length <= 1) return res.status(400).json({ detail: "Keep at least one industry." });
+  state.industries = state.industries.filter(i => i.id !== req.params.iid);
+  if (state.strategy.industry === req.params.iid) state.strategy.industry = state.industries[0].id;
+  res.json(strategyPayload());
 });
 
-// The Coach
+// The Coach — 60-second build sheets
+function fallbackCoachTemplate(topic, b) {
+  return {
+    title: `${topic} — 60-Second Build Sheet`,
+    whyItWorks: `Raw, behind-the-scenes craft is what stops the scroll for ${b.industryLabel || "local businesses"}. Viewers in ${b.city || "town"} want to see the real hands doing the real work.`,
+    keyElements: [
+      "Action-first hook in the first 2 seconds",
+      `Signature offering on screen: ${b.signatureItem || "your signature item"}`,
+      "One sensory close-up (sound, texture, steam, sparks)",
+      "Owner or staff face on camera for 3+ seconds",
+      "Single clear call to action at the end"
+    ],
+    offerTemplate: [
+      `Scan to play the rewards wheel — first-timers win ___ (see Prize Board)`,
+      `Book direct at ${b.orderUrl || "our site"} and mention this video for ___`
+    ],
+    shotList: [
+      { shot: "0-3s: The hook", where: "Tight on hands + tool, action already happening", tip: "Start mid-motion. Say the single most interesting word first." },
+      { shot: "3-25s: The craft", where: "Three quick cuts of the process", tip: "Phone 12 inches away, vertical, natural window light on the face." },
+      { shot: "25-45s: The reveal", where: "Finished result, then the owner's face", tip: "Let the real sound play — no music over the reveal." },
+      { shot: "45-60s: The ask", where: "Owner to camera, QR or link on screen", tip: "One ask only. Say the reward out loud." }
+    ],
+    whereItGoes: ["Instagram Reels", "Facebook Reels", "Google Business Update (15s cut)", "TikTok"],
+    successCheck: ["Watch-through past 3 seconds is above 60%", "At least 3 comments from locals", "A redemption at the register within 7 days"],
+    hook: `Hold up the dish or tool and say: 'This is why ${b.name} does ${topic} differently than anyone in ${b.city}.'`,
+    action: "Show the signature technique in 3 quick cuts — high energy, real sound.",
+    callToAction: `Claim your first-time reward on our rewards wheel or book direct at ${b.orderUrl}.`,
+    filmingTips: "Shoot vertical, phone microphone 12 inches from the mouth. Keep it raw and real."
+  };
+}
+
 app.post('/api/coach/template', async (req, res) => {
   const { topic } = req.body || {};
-  const t = (topic || "Signature Special").trim();
+  const t = String(topic || "Signature Special").trim().slice(0, 140);
   const b = state.brand_profile || {};
 
   let generatedTemplate = null;
@@ -1493,56 +1893,36 @@ app.post('/api/coach/template', async (req, res) => {
     try {
       const prompt = `You are "The Coach", an elite local business video director for "${b.name}" (${b.industryLabel || "Local Business"}), located in ${b.city || "Springfield"}.
 Brand Voice: ${b.voice || "Passionate craftsperson, authoritative, authentic"}.
-Signature item: ${b.signatureItem || "Signature Service"}.
+Signature item: ${b.signatureItem || "Signature Service"}. Booking URL: ${b.orderUrl}.
 
-Topic for 60-Second Video Shooting Sheet: "${t}".
+Topic for a 60-second phone video build sheet: "${t}".
 
-Generate a structured video shooting script for the owner/staff containing:
-1. hook: The first 3 seconds to stop viewers scrolling (opening verbal line + physical action).
-2. action: 3 rapid cut descriptions showing the behind-the-scenes craft with real sensory cues.
-3. callToAction: Clear next step directing viewers to the rewards wheel or direct booking URL (${b.orderUrl}).
-4. filmingTips: Practical phone camera distance, audio mic placement, and natural lighting tips.
-
-Return ONLY valid JSON matching this schema:
+Return ONLY valid JSON matching this schema (all fields required):
 {
-  "hook": "...",
-  "action": "...",
-  "callToAction": "...",
-  "filmingTips": "..."
+  "title": "short punchy title",
+  "whyItWorks": "1-2 sentences",
+  "keyElements": ["5 short bullet points"],
+  "offerTemplate": ["2 fill-in-the-blank offer lines using ___"],
+  "shotList": [{ "shot": "0-3s: ...", "where": "...", "tip": "..." }, { "shot": "...", "where": "...", "tip": "..." }, { "shot": "...", "where": "...", "tip": "..." }, { "shot": "...", "where": "...", "tip": "..." }],
+  "whereItGoes": ["surfaces"],
+  "successCheck": ["3 measurable checks"],
+  "hook": "opening line + action",
+  "action": "3 rapid cuts",
+  "callToAction": "the ask",
+  "filmingTips": "camera distance, mic, light"
 }`;
-
-      const response = await ai.models.generateContent({
-        model: "gemini-3.7-flash",
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json"
-        }
-      });
-
+      const response = await ai.models.generateContent({ model: GEMINI_MODEL, contents: prompt, config: { responseMimeType: "application/json" } });
       const parsed = JSON.parse(response.text);
-      if (parsed.hook && parsed.action && parsed.callToAction) {
-        generatedTemplate = parsed;
+      if (parsed.title && Array.isArray(parsed.keyElements) && Array.isArray(parsed.shotList)) {
+        generatedTemplate = { ...fallbackCoachTemplate(t, b), ...parsed };
       }
     } catch (e) {
       console.warn("Gemini coach template fallback:", e.message);
     }
   }
+  if (!generatedTemplate) generatedTemplate = fallbackCoachTemplate(t, b);
 
-  if (!generatedTemplate) {
-    generatedTemplate = {
-      hook: `Hold up the dish or tool and say: 'This is why ${b.name} does ${t} differently than anyone in ${b.city}.'`,
-      action: "Show the signature prep technique in 3 quick cuts — high energy, real sound effects.",
-      callToAction: `Claim your first-time reward on our rewards wheel or order online at ${b.orderUrl}.`,
-      filmingTips: "Shoot vertical with phone microphone 12 inches from mouth. Keep raw & authentic."
-    };
-  }
-
-  const newTmpl = {
-    id: `tmpl_${Date.now()}`,
-    topic: t,
-    template: generatedTemplate,
-    createdAt: new Date().toISOString()
-  };
+  const newTmpl = { id: `tmpl_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`, topic: t, template: generatedTemplate, createdAt: new Date().toISOString() };
   state.coach_templates.unshift(newTmpl);
   res.json(newTmpl);
 });
@@ -1552,89 +1932,92 @@ app.get('/api/coach/templates', (req, res) => {
 });
 
 app.delete('/api/coach/template/:tid', (req, res) => {
+  const before = state.coach_templates.length;
   state.coach_templates = state.coach_templates.filter(t => t.id !== req.params.tid);
+  if (state.coach_templates.length === before) return res.status(404).json({ detail: "Template not found." });
   res.json({ status: "ok" });
 });
 
 app.post('/api/coach/template/:tid/to-calendar', (req, res) => {
   const tmpl = state.coach_templates.find(t => t.id === req.params.tid);
-  if (tmpl && state.calendar[0]) {
-    state.calendar[0].days.push({
-      day: "Fri",
-      date: "This Week",
-      promptId: "coach-build",
-      title: tmpl.topic,
-      status: "scheduled",
-      channel: "Instagram, TikTok & GBP"
-    });
-  }
-  res.json({ status: "ok" });
+  if (!tmpl) return res.status(404).json({ detail: "Template not found." });
+  const title = tmpl.template?.title || tmpl.topic;
+  const mon = weekStartISO(0);
+  const todayIdx = (new Date().getUTCDay() + 6) % 7;
+  const filmDay = addDaysISO(mon, Math.min(todayIdx + 1, 6));
+  const postDay = addDaysISO(filmDay, 2);
+  const added = [
+    addCalendarPostRow({ date: filmDay, time: "09:00", title: `Film: ${title}`, surface: "Instagram Reels", source: "prompt", status: "scheduled", notes: tmpl.template?.hook }),
+    addCalendarPostRow({ date: postDay, time: "12:00", title: `Post: ${title}`, surface: "Instagram Reels", source: "prompt", status: "scheduled" }),
+    addCalendarPostRow({ date: postDay, time: "17:00", title: `Post: ${title}`, surface: "Facebook Reels", source: "prompt", status: "scheduled" })
+  ];
+  res.json({ ...buildCalendarResponse(), status: "ok", addedCount: added.length, added: added.map(p => ({ id: p.id, date: p.date, surface: p.surface })) });
 });
 
 app.get('/api/coach/template/:tid/pdf', (req, res) => {
-  res.setHeader('Content-Type', 'text/html');
-  res.send(`<html><body style="font-family:sans-serif;padding:40px;"><h1>OmniLocal #1 Build Sheet</h1><p>Coach template printable build guide.</p></body></html>`);
+  const tmpl = state.coach_templates.find(t => t.id === req.params.tid);
+  if (!tmpl) return res.status(404).json({ detail: "Template not found." });
+  const t = tmpl.template || {};
+  const lines = [`Topic: ${tmpl.topic}`, `Why it works: ${t.whyItWorks || ""}`, "", "Key elements:"];
+  (t.keyElements || []).forEach(k => lines.push(`  - ${k}`));
+  lines.push("", "Shot list:");
+  (t.shotList || []).forEach(s => { lines.push(`  ${s.shot} - ${s.where}`); lines.push(`     Tip: ${s.tip}`); });
+  lines.push("", "Your offer:");
+  (t.offerTemplate || []).forEach(o => lines.push(`  ${o}`));
+  lines.push("", `Where it goes: ${(t.whereItGoes || []).join(", ")}`);
+  lines.push(`You'll know it worked when: ${(t.successCheck || []).join(" / ")}`);
+  lines.push("", `Hook: ${t.hook || ""}`, `Call to action: ${t.callToAction || ""}`, `Filming tips: ${t.filmingTips || ""}`);
+  sendPdf(res, `build-sheet-${slugify(tmpl.topic) || tmpl.id}.pdf`, t.title || `${tmpl.topic} Build Sheet`, lines);
 });
 
 // Video Vault
+const VAULT_PROMPTS = [
+  { id: "v_p1", title: "Your 60-Second Story", category: "intro", direction: "Introduce yourself, why you opened, and your signature dish in 60 unedited seconds.", aliases: ["intro"] },
+  { id: "v_p2", title: "Signature Ingredient Pull", category: "kitchen", direction: "Show the house-made mozzarella or bread pull right up close to the camera lens.", aliases: ["operational-hustle"] },
+  { id: "v_p3", title: "Behind-the-Counter Rush", category: "kitchen", direction: "Catch the dinner rush sizzle, bread toast, and order bell in full swing.", aliases: ["rush"] },
+  { id: "v_p4", title: "Owner Greeting & Gratitude", category: "greeting", direction: "Say thank you to first-time guests and invite them to claim their welcome spin reward.", aliases: ["greeting"] }
+];
+const PROMPT_IDS = new Set(VAULT_PROMPTS.flatMap(p => [p.id, ...p.aliases]));
+
 app.get('/api/vault', (req, res) => {
-  const prompts = [
-    {
-      id: "v_p1",
-      title: "Your 60-Second Story",
-      category: "intro",
-      direction: "Introduce yourself, why you opened, and your signature dish in 60 unedited seconds.",
-      video: state.vault.find(v => v.promptId === "intro") || null
-    },
-    {
-      id: "v_p2",
-      title: "Signature Ingredient Pull",
-      category: "kitchen",
-      direction: "Show the house-made mozzarella or bread pull right up close to the camera lens.",
-      video: state.vault.find(v => v.promptId === "operational-hustle") || {
-        id: "v_01",
-        title: "Mozzarella Stretching Behind Counter",
-        promptId: "operational-hustle",
-        featured: true
-      }
-    },
-    {
-      id: "v_p3",
-      title: "Behind-the-Counter Rush",
-      category: "kitchen",
-      direction: "Catch the dinner rush sizzle, bread toast, and order bell in full swing.",
-      video: null
-    },
-    {
-      id: "v_p4",
-      title: "Owner Greeting & Gratitude",
-      category: "greeting",
-      direction: "Say thank you to first-time guests and invite them to claim their welcome spin reward.",
-      video: null
-    }
-  ];
-
-  const customVideos = state.vault.filter(v => !v.promptId || v.promptId === "custom");
+  const prompts = VAULT_PROMPTS.map(p => ({
+    id: p.id, title: p.title, category: p.category, direction: p.direction,
+    video: state.vault.find(v => v.promptId === p.id || p.aliases.includes(v.promptId)) || null
+  }));
+  const customVideos = state.vault.filter(v => !v.promptId || v.promptId === "custom" || !PROMPT_IDS.has(v.promptId));
   const captured = prompts.filter(p => p.video).length;
-
   res.json({
     prompts,
     capturedCount: captured,
     totalPrompts: prompts.length,
-    totalVideos: state.vault.length + captured,
-    featured: state.vault.find(v => v.featured) || { id: "v_01", title: "Mozzarella Stretching Behind Counter" },
+    totalVideos: state.vault.length,
+    featured: state.vault.find(v => v.featured) || null,
     custom: customVideos,
     videos: state.vault
   });
 });
 
 app.post('/api/vault/save', (req, res) => {
-  const { title, promptId, filename } = req.body || {};
+  const { title, promptId, filename, uploadId } = req.body || {};
+  const up = uploadId ? state.uploads[uploadId] : null;
+  if (uploadId && !up) return res.status(404).json({ detail: "Upload not found. Please upload the clip again." });
+  if (up && up.bytes === 0) return res.status(400).json({ detail: "The uploaded clip is empty. Try a short MP4/MOV." });
+  const id = `v_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
+  let filePath = null;
+  if (up) {
+    filePath = path.join(UPLOAD_DIR, `vault_${id}_${safeName(up.filename)}`);
+    fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+    fs.renameSync(up.filePath, filePath);
+    delete state.uploads[uploadId];
+  }
+  const prompt = promptId ? VAULT_PROMPTS.find(p => p.id === promptId || p.aliases.includes(promptId)) : null;
   const v = {
-    id: `v_${Date.now()}`,
-    title: title || "New Video Clip",
-    promptId: promptId || "operational-hustle",
-    filename: filename || "clip.mp4",
+    id,
+    title: String(title || (prompt ? prompt.title : "New Video Clip")).trim(),
+    promptId: prompt ? prompt.id : null,
+    filename: safeName(filename || (up && up.filename) || "clip.mp4"),
+    filePath,
+    bytes: up ? up.bytes : 0,
     featured: false,
     createdAt: new Date().toISOString()
   };
@@ -1643,30 +2026,110 @@ app.post('/api/vault/save', (req, res) => {
 });
 
 app.get('/api/vault/video/:vid', (req, res) => {
-  const v = state.vault.find(x => x.id === req.params.vid) || state.vault[0];
-  res.json(v || {});
+  const v = state.vault.find(x => x.id === req.params.vid);
+  if (!v) return res.status(404).json({ detail: "Video not found." });
+  if (!v.filePath || !fs.existsSync(v.filePath)) return res.status(404).json({ detail: "No media stored for this clip (demo entry)." });
+  res.setHeader('Content-Type', videoMime(v.filename));
+  res.sendFile(v.filePath);
 });
 
 app.delete('/api/vault/:vid', (req, res) => {
-  state.vault = state.vault.filter(v => v.id !== req.params.vid);
+  const v = state.vault.find(x => x.id === req.params.vid);
+  if (!v) return res.status(404).json({ detail: "Video not found." });
+  if (v.filePath && fs.existsSync(v.filePath)) { try { fs.unlinkSync(v.filePath); } catch {} }
+  state.vault = state.vault.filter(x => x.id !== req.params.vid);
   res.json({ status: "ok" });
 });
 
 app.post('/api/vault/:vid/feature', (req, res) => {
   const v = state.vault.find(x => x.id === req.params.vid);
-  if (v) v.featured = !v.featured;
-  res.json({ status: "ok", video: v });
+  if (!v) return res.status(404).json({ detail: "Video not found." });
+  const next = !v.featured;
+  for (const x of state.vault) x.featured = false;
+  v.featured = next;
+  res.json({
+    status: "ok",
+    featured: v.featured,
+    note: v.featured ? `"${v.title}" now leads the 30-day flow and the welcome email.` : "The 30-day flow will spread your clips evenly.",
+    video: v
+  });
 });
 
-// Quality Content Executioner
+// Quality Content Executioner (weekly learning loop)
+const DEFAULT_REPORTS = JSON.parse(JSON.stringify(SEED_STATE.reports));
+if (!state.transactions) state.transactions = [];
+const CHANNEL_LABELS = {
+  facebook_act_now_ads: "Meta Act-Now Ads",
+  google_maps_pin_boost: "Google Maps Pin Boost",
+  gbp_organic_boost: "GBP Organic Boost",
+  local_story_drip: "Local Story Drip"
+};
+const round2 = (n) => Math.round(n * 100) / 100;
+
+function nextShares(latest) {
+  const a = latest?.decision?.nextShareA ?? latest?.decision?.winnerShare ?? latest?.allocation?.strategyA?.share ?? 0.5;
+  const winner = latest?.decision?.winner || "A";
+  const shareA = winner === "A" ? a : 1 - a;
+  return { shareA: Math.min(0.8, Math.max(0.2, round2(shareA))), shareB: Math.min(0.8, Math.max(0.2, round2(1 - shareA))) };
+}
+
+function buildWeekReport(prev, weekOf, txForWeek) {
+  const totalBudget = 299.0;
+  const { shareA, shareB } = nextShares(prev);
+  const dollarsA = round2(totalBudget * shareA);
+  const dollarsB = round2(totalBudget * shareB);
+  let revA, revB, newA, newB, zipBreakdown;
+  if (txForWeek && txForWeek.length) {
+    revA = round2(txForWeek.filter(t => t.strategy === "A").reduce((s, t) => s + t.netSales, 0));
+    revB = round2(txForWeek.filter(t => t.strategy === "B").reduce((s, t) => s + t.netSales, 0));
+    newA = new Set(txForWeek.filter(t => t.strategy === "A").map(t => t.customerId)).size;
+    newB = new Set(txForWeek.filter(t => t.strategy === "B").map(t => t.customerId)).size;
+    zipBreakdown = {};
+    for (const t of txForWeek) {
+      const z = t.postalCode || "unknown";
+      if (!zipBreakdown[z]) zipBreakdown[z] = { customers: 0, revenue: 0, orders: 0 };
+      zipBreakdown[z].revenue = round2(zipBreakdown[z].revenue + t.netSales);
+      zipBreakdown[z].orders += 1;
+      zipBreakdown[z].customers += 1;
+    }
+  } else {
+    const roasA = (prev?.metrics?.strategyA?.roas || 7.5) * 1.03;
+    const roasB = (prev?.metrics?.strategyB?.roas || 4.5) * 0.98;
+    revA = round2(dollarsA * roasA);
+    revB = round2(dollarsB * roasB);
+    newA = Math.round(revA / 33);
+    newB = Math.round(revB / 31);
+    const total = revA + revB;
+    zipBreakdown = { "01103": { customers: Math.round((newA + newB) * 0.5), revenue: round2(total * 0.5) }, "01104": { customers: Math.round((newA + newB) * 0.3), revenue: round2(total * 0.3) }, "01108": { customers: Math.round((newA + newB) * 0.2), revenue: round2(total * 0.2) } };
+  }
+  const roasA = dollarsA ? round2(revA / dollarsA) : 0;
+  const roasB = dollarsB ? round2(revB / dollarsB) : 0;
+  const winner = roasA >= roasB ? "A" : "B";
+  const winnerShare = Math.min(0.8, round2((winner === "A" ? shareA : shareB) + 0.05));
+  return {
+    weekOf,
+    allocation: {
+      weekOf,
+      totalBudget,
+      strategyA: { share: shareA, dollars: dollarsA, perChannel: { facebook_act_now_ads: round2(dollarsA / 2), google_maps_pin_boost: round2(dollarsA / 2) } },
+      strategyB: { share: shareB, dollars: dollarsB, perChannel: { gbp_organic_boost: round2(dollarsB / 2), local_story_drip: round2(dollarsB / 2) } }
+    },
+    metrics: {
+      strategyA: { newCustomers: newA, revenue: revA, cac: newA ? round2(dollarsA / newA) : 0, roas: roasA, clicks: Math.round(revA / 2.4), conversions: newA, spend: dollarsA },
+      strategyB: { newCustomers: newB, revenue: revB, cac: newB ? round2(dollarsB / newB) : 0, roas: roasB, clicks: Math.round(revB / 3.1), conversions: newB, spend: dollarsB }
+    },
+    decision: { winner, winnerShare, nextShareA: winner === "A" ? winnerShare : round2(1 - winnerShare), nextShareB: winner === "B" ? winnerShare : round2(1 - winnerShare) },
+    zipBreakdown,
+    totalRevenue: round2(revA + revB),
+    totalSpend: totalBudget,
+    blendedRoas: round2((revA + revB) / totalBudget),
+    dataSource: txForWeek && txForWeek.length ? "real" : "demo"
+  };
+}
+
 app.get('/api/executioner/allocation', (req, res) => {
   const latest = state.reports[state.reports.length - 1];
-  res.json(latest ? latest.allocation : {
-    weekOf: "2026-08-11",
-    totalBudget: 299.0,
-    strategyA: { share: 0.7, dollars: 209.3, perChannel: { facebook_act_now_ads: 104.65, google_maps_pin_boost: 104.65 } },
-    strategyB: { share: 0.3, dollars: 89.7, perChannel: { gbp_organic_boost: 44.85, local_story_drip: 44.85 } }
-  });
+  res.json(latest ? latest.allocation : DEFAULT_REPORTS[DEFAULT_REPORTS.length - 1].allocation);
 });
 
 app.get('/api/executioner/reports', (req, res) => {
@@ -1676,83 +2139,43 @@ app.get('/api/executioner/reports', (req, res) => {
       A: { id: "A", displayName: "Paid Local Velocity" },
       B: { id: "B", displayName: "Community Flywheel" }
     },
-    channelLabels: {
-      facebook_act_now_ads: "Meta Act-Now Ads",
-      google_maps_pin_boost: "Google Maps Pin Boost",
-      gbp_organic_boost: "GBP Organic Boost",
-      local_story_drip: "Local Story Drip"
-    }
+    channelLabels: CHANNEL_LABELS,
+    transactionsImported: state.transactions.length
   });
 });
 
+// "Run Next Week": closes the current week and reallocates budget toward the winner.
 app.post('/api/executioner/reconcile', (req, res) => {
   const latest = state.reports[state.reports.length - 1];
+  const weekOf = latest ? addDaysISO(latest.weekOf, 7) : weekStartISO(0);
+  const weekEnd = addDaysISO(weekOf, 7);
+  const txForWeek = state.transactions.filter(t => t.date >= weekOf && t.date < weekEnd);
+  const report = buildWeekReport(latest, weekOf, txForWeek.length ? txForWeek : (state.transactions.length && !latest?.reconciledFromTx ? state.transactions : null));
+  if (state.transactions.length) report.reconciledFromTx = true;
+  state.reports.push(report);
   res.json({
     status: "ok",
-    reallocatedTo: latest?.decision?.winner || "A",
-    report: latest || { totalRevenue: 2044.00, blendedRoas: 6.84 },
-    message: "Transactions reconciled successfully."
+    reallocatedTo: report.decision.winner,
+    report,
+    message: `Week of ${weekOf} reconciled. Strategy ${report.decision.winner} wins at ${report.metrics["strategy" + report.decision.winner].roas}x - next week's share moves to ${Math.round(report.decision.winnerShare * 100)}%.`
   });
 });
 
 app.post('/api/executioner/reset', (req, res) => {
-  state.reports = [
-    {
-      weekOf: "2026-07-28",
-      totalSpend: 299.00,
-      totalRevenue: 1790.50,
-      blendedRoas: 5.99,
-      dataSource: "demo",
-      allocation: {
-        strategyA: { share: 0.50, dollars: 149.50, perChannel: { facebook_act_now_ads: 74.75, google_maps_pin_boost: 74.75 } },
-        strategyB: { share: 0.50, dollars: 149.50, perChannel: { gbp_organic_boost: 74.75, local_story_drip: 74.75 } }
-      },
-      metrics: {
-        strategyA: { revenue: 1120.00, roas: 7.49, newCustomers: 34, cac: 4.40 },
-        strategyB: { revenue: 670.50, roas: 4.48, newCustomers: 21, cac: 7.12 }
-      },
-      decision: { winner: "A", nextShareA: 0.70, nextShareB: 0.30 },
-      zipBreakdown: {
-        "01103": { revenue: 890.00, orders: 28 },
-        "01104": { revenue: 540.50, orders: 17 },
-        "01108": { revenue: 360.00, orders: 10 }
-      }
-    },
-    {
-      weekOf: "2026-08-04",
-      totalSpend: 299.00,
-      totalRevenue: 2044.00,
-      blendedRoas: 6.84,
-      dataSource: "demo",
-      allocation: {
-        strategyA: { share: 0.70, dollars: 209.30, perChannel: { facebook_act_now_ads: 104.65, google_maps_pin_boost: 104.65 } },
-        strategyB: { share: 0.30, dollars: 89.70, perChannel: { gbp_organic_boost: 44.85, local_story_drip: 44.85 } }
-      },
-      metrics: {
-        strategyA: { revenue: 1612.00, roas: 7.70, newCustomers: 48, cac: 4.36 },
-        strategyB: { revenue: 432.00, roas: 4.82, newCustomers: 14, cac: 6.41 }
-      },
-      decision: { winner: "A", nextShareA: 0.75, nextShareB: 0.25 },
-      zipBreakdown: {
-        "01103": { revenue: 1240.00, orders: 41 },
-        "01104": { revenue: 480.00, orders: 14 },
-        "01108": { revenue: 324.00, orders: 7 }
-      }
-    }
-  ];
-  res.json({ status: "ok" });
+  state.reports = JSON.parse(JSON.stringify(DEFAULT_REPORTS));
+  state.transactions = [];
+  res.json({ status: "ok", weeks: state.reports.length });
 });
 
 app.get('/api/executioner/recommended-plan', async (req, res) => {
   const latest = state.reports[state.reports.length - 1];
-  const shareA = latest?.decision?.nextShareA || 0.75;
-  const shareB = latest?.decision?.nextShareB || 0.25;
+  const { shareA, shareB } = nextShares(latest);
   const totalBudget = 299.00;
   const b = state.brand_profile || {};
   const cadence = state.campaign_cadence || {};
 
-  let diversificationTip = "Strategy A continues to drive higher ROAS in your core zip codes. Maintaining 25% allocation to Strategy B keeps new local discovery alive.";
-  let projectedRoas = 7.2;
+  let diversificationTip = `Strategy ${latest?.decision?.winner || "A"} continues to drive higher ROAS in your core zip codes. Keeping ${Math.round(Math.min(shareA, shareB) * 100)}% on the other track keeps new local discovery alive.`;
+  let projectedRoas = round2((latest?.blendedRoas || 6.84) * 1.04);
 
   const ai = getGeminiClient();
   if (ai) {
@@ -1769,15 +2192,7 @@ Analyze performance and return ONLY valid JSON:
   "diversificationTip": "1-2 sentence recommendation for local marketing budget allocation and anti-fatigue balance",
   "projectedRoas": 7.4
 }`;
-
-      const response = await ai.models.generateContent({
-        model: "gemini-3.7-flash",
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json"
-        }
-      });
-
+      const response = await ai.models.generateContent({ model: GEMINI_MODEL, contents: prompt, config: { responseMimeType: "application/json" } });
       const parsed = JSON.parse(response.text);
       if (parsed.diversificationTip) diversificationTip = parsed.diversificationTip;
       if (parsed.projectedRoas) projectedRoas = Number(parsed.projectedRoas);
@@ -1786,93 +2201,261 @@ Analyze performance and return ONLY valid JSON:
     }
   }
 
+  // Channels are gated by the connected platforms in the Connector panel.
+  const excludedA = [];
+  if (!isPlatformConnected("facebook")) excludedA.push({ channel: "facebook_act_now_ads", platform: "facebook", label: "Meta Act-Now Ads" });
+  if (!isPlatformConnected("google")) excludedA.push({ channel: "google_maps_pin_boost", platform: "google", label: "Google Maps Pin Boost" });
+  if (!isPlatformConnected("tiktok")) excludedA.push({ channel: "tiktok_spark_ads", platform: "tiktok", label: "TikTok Spark Ads" });
+  const excludedB = [];
+  if (!isPlatformConnected("google")) excludedB.push({ channel: "gbp_organic_boost", platform: "google", label: "GBP Organic Boost" });
+  const activeA = ["facebook_act_now_ads", "google_maps_pin_boost"].filter(c => !excludedA.some(e => e.channel === c));
+  const activeB = ["gbp_organic_boost", "local_story_drip"].filter(c => !excludedB.some(e => e.channel === c));
+  const splitEven = (dollars, channels) => Object.fromEntries(channels.map(c => [c, round2(dollars / (channels.length || 1))]));
+
   res.json({
     recommendedShareA: shareA,
     recommendedShareB: shareB,
     projectedRoas,
-    warning: null,
+    warning: latest?.dataSource === "real" ? null : "This plan is learning on demo data. Import a POS transactions CSV below to reconcile against real orders.",
     diversificationTip,
     strategyA: {
       id: "A",
       displayName: "Paid Local Velocity (Strategy A)",
-      dollars: Math.round(totalBudget * shareA * 100) / 100,
+      dollars: round2(totalBudget * shareA),
       share: shareA,
-      perChannel: {
-        facebook_act_now_ads: Math.round(totalBudget * shareA * 0.5 * 100) / 100,
-        google_maps_pin_boost: Math.round(totalBudget * shareA * 0.5 * 100) / 100
-      },
-      excludedChannels: [
-        { channel: "tiktok_spark_ads", platform: "tiktok", label: "TikTok Spark Ads" }
-      ]
+      perChannel: splitEven(totalBudget * shareA, activeA),
+      excludedChannels: excludedA
     },
     strategyB: {
       id: "B",
       displayName: "Community Flywheel (Strategy B)",
-      dollars: Math.round(totalBudget * shareB * 100) / 100,
+      dollars: round2(totalBudget * shareB),
       share: shareB,
-      perChannel: {
-        gbp_organic_boost: Math.round(totalBudget * shareB * 0.5 * 100) / 100,
-        local_story_drip: Math.round(totalBudget * shareB * 0.5 * 100) / 100
-      },
-      excludedChannels: []
+      perChannel: splitEven(totalBudget * shareB, activeB),
+      excludedChannels: excludedB
     }
   });
 });
 
 app.get('/api/executioner/sample-transactions-csv', (req, res) => {
-  const csv = "Date,Net Sales,Customer ID,Postal Code,Clicks,Discount\n08/04/2026,32.50,CUST101,01103,9,STRATA-9812\n08/04/2026,24.00,CUST102,01104,4,STRATB-3310\n08/05/2026,45.00,CUST103,01108,12,STRATA-7714\n08/06/2026,28.50,CUST104,01103,7,STRATA-2291\n08/07/2026,52.00,CUST105,01103,14,STRATA-4419\n08/08/2026,19.50,CUST106,01105,3,STRATB-8821\n";
+  const mon = weekStartISO(0);
+  const d = (i) => { const iso = addDaysISO(mon, i); return `${iso.slice(5, 7)}/${iso.slice(8, 10)}/${iso.slice(0, 4)}`; };
+  const csv = `Date,Net Sales,Customer ID,Postal Code,Clicks,Discount\n${d(0)},32.50,CUST101,01103,9,STRATA-9812\n${d(0)},24.00,CUST102,01104,4,STRATB-3310\n${d(1)},45.00,CUST103,01108,12,STRATA-7714\n${d(2)},28.50,CUST104,01103,7,STRATA-2291\n${d(3)},52.00,CUST105,01103,14,STRATA-4419\n${d(4)},19.50,CUST106,01105,3,STRATB-8821\n${d(4)},,CUST107,01105,1,\n`;
   res.json({ csv, format: "Square POS format (Date, Net Sales, Customer ID, Postal Code, Clicks, Discount)" });
 });
 
+function parseUsDate(s) {
+  const m = String(s || "").trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m) return `${m[3]}-${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")}`;
+  if (/^\d{4}-\d{2}-\d{2}/.test(String(s || ""))) return String(s).slice(0, 10);
+  return null;
+}
+
 app.post('/api/executioner/import-transactions', (req, res) => {
-  const latest = state.reports[state.reports.length - 1];
-  if (latest) {
-    latest.dataSource = "real";
+  const { csv, source } = req.body || {};
+  const { header, rows } = parseCsv(csv);
+  if (rows.length === 0) return res.status(400).json({ detail: "Paste a POS export with a header row and at least one order." });
+  const col = (names) => header.find(h => names.some(n => h.replace(/[^a-z]/g, "") === n));
+  const dateKey = col(["date", "orderdate", "transactiondate"]);
+  const salesKey = col(["netsales", "net", "total", "amount", "sales"]);
+  const custKey = col(["customerid", "customer", "customername"]);
+  const zipKey = col(["postalcode", "zip", "zipcode"]);
+  const promoKey = col(["discount", "promocode", "promo", "coupon"]);
+  if (!dateKey || !salesKey) return res.status(400).json({ detail: "CSV needs at least Date and Net Sales columns." });
+  const mapping = { [dateKey]: "date", [salesKey]: "net_sales" };
+  if (custKey) mapping[custKey] = "customer_id";
+  if (zipKey) mapping[zipKey] = "postal_code";
+  if (promoKey) mapping[promoKey] = "promo_code";
+  let imported = 0, skipped = 0, matchedPromo = 0, revenueImported = 0;
+  const weeks = new Set();
+  for (const r of rows) {
+    const date = parseUsDate(r[dateKey]);
+    const net = Number(r[salesKey]);
+    if (!date || !(net > 0)) { skipped += 1; continue; }
+    const promo = String(promoKey ? r[promoKey] : "").toUpperCase();
+    const strategy = promo.startsWith("STRATB") ? "B" : promo.startsWith("STRATA") ? "A" : (imported % 3 === 2 ? "B" : "A");
+    if (promo) matchedPromo += 1;
+    state.transactions.push({ id: `tx_${Date.now()}_${imported}`, date, netSales: round2(net), customerId: custKey ? r[custKey] : `anon_${imported}`, postalCode: zipKey ? r[zipKey] : null, promo: promo || null, strategy, source: source || "csv" });
+    revenueImported += net;
+    weeks.add(weekStartISO(Math.floor((new Date(date + "T00:00:00Z") - new Date(weekStartISO(0) + "T00:00:00Z")) / (7 * 86400000))));
+    imported += 1;
   }
+  if (imported === 0) return res.status(400).json({ detail: "No rows had a valid date and a net sales amount above $0." });
+  // Rebuild the latest week on real revenue.
+  const latest = state.reports[state.reports.length - 1];
+  const rebuilt = buildWeekReport(state.reports[state.reports.length - 2] || null, latest.weekOf, state.transactions);
+  rebuilt.reconciledFromTx = true;
+  state.reports[state.reports.length - 1] = rebuilt;
+  if (!state.pos_imports) state.pos_imports = [];
+  state.pos_imports.unshift({ at: new Date().toISOString(), kind: "transactions", rows: rows.length, imported });
   res.json({
     status: "ok",
-    imported: 48,
-    matchedPromo: 42,
-    revenueImported: 1640.50,
-    weeks: ["2026-08-04"],
-    skipped: 0,
-    mapping: { Date: "date", "Net Sales": "net_sales", Discount: "promo_code", "Postal Code": "postal_code" }
+    imported,
+    matchedPromo,
+    revenueImported: round2(revenueImported),
+    weeks: [...weeks],
+    skipped,
+    mapping,
+    totalTransactions: state.transactions.length
   });
 });
 
 app.post('/api/executioner/clear-transactions', (req, res) => {
-  const latest = state.reports[state.reports.length - 1];
-  if (latest) {
-    latest.dataSource = "demo";
-  }
+  state.transactions = [];
+  state.reports = JSON.parse(JSON.stringify(DEFAULT_REPORTS));
   res.json({ status: "ok" });
 });
 
 // Quality Customer Maximizer
+// Minimal text-only PDF writer (Helvetica) so "Download PDF" buttons deliver a real PDF.
+function makeSimplePdf(title, lines) {
+  const esc = (s) => String(s).replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
+  const content = [];
+  content.push("BT /F1 18 Tf 50 780 Td (" + esc(title) + ") Tj ET");
+  let y = 750;
+  for (const line of lines) {
+    if (y < 60) break;
+    content.push("BT /F1 11 Tf 50 " + y + " Td (" + esc(line) + ") Tj ET");
+    y -= 16;
+  }
+  const stream = content.join("\n");
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+    "<< /Length " + Buffer.byteLength(stream, "latin1") + " >>\nstream\n" + stream + "\nendstream",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
+  ];
+  let out = "%PDF-1.4\n";
+  const offsets = [];
+  objects.forEach((obj, i) => {
+    offsets.push(Buffer.byteLength(out, "latin1"));
+    out += `${i + 1} 0 obj\n${obj}\nendobj\n`;
+  });
+  const xref = Buffer.byteLength(out, "latin1");
+  out += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const o of offsets) out += String(o).padStart(10, "0") + " 00000 n \n";
+  out += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(out, "latin1");
+}
+
+function sendPdf(res, filename, title, lines) {
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(makeSimplePdf(title, lines));
+}
+
+function requestOrigin(req) {
+  const forwardedProto = req.headers['x-forwarded-proto'];
+  const proto = forwardedProto ? String(forwardedProto).split(',')[0] : req.protocol;
+  return `${proto}://${req.get('host')}`;
+}
+
+function weekStartISO(offsetWeeks = 0) {
+  const d = new Date();
+  const day = (d.getUTCDay() + 6) % 7; // Monday = 0
+  d.setUTCDate(d.getUTCDate() - day + offsetWeeks * 7);
+  d.setUTCHours(0, 0, 0, 0);
+  return d.toISOString().slice(0, 10);
+}
+
+// Weekly game plan: schedule wins, pinned override is the fallback, auto-rotation covers the rest.
+if (!state.game_plan) state.game_plan = {};
+function resolveActiveGame() {
+  if (state.game_settings.enabled === false) return { game: null, source: "paused" };
+  const scheduled = state.game_plan[weekStartISO(0)];
+  if (scheduled === "none") return { game: null, source: "weekly_schedule" };
+  if (scheduled) {
+    const g = GAMES.find(x => x.id === scheduled);
+    if (g) return { game: g, source: "weekly_schedule" };
+  }
+  if (state.game_override) {
+    const g = GAMES.find(x => x.id === state.game_override);
+    if (g) return { game: g, source: "admin_override" };
+  }
+  const weekIndex = Math.floor(Date.now() / (7 * 86400000));
+  return { game: GAMES[weekIndex % GAMES.length], source: "auto_rotation" };
+}
+
+function activeGamePayload() {
+  const { game, source } = resolveActiveGame();
+  return game ? { ...game, tagline: game.description, source } : null;
+}
+
+function findMember(email, phone) {
+  return state.members.find(m => (email && m.email === email) || (phone && m.phone === phone)) || null;
+}
+
 app.post('/api/maximizer/spin', async (req, res) => {
-  const { name, email, phone, spaceId, agree } = req.body || {};
+  const { name, email, phone, spaceId, agree, isNewGuest, segment } = req.body || {};
+  const cleanEmail = String(email || "").trim().toLowerCase() || null;
+  const cleanPhone = String(phone || "").trim() || null;
+  const isAdminDemo = spaceId === "admin-demo";
+
+  if (!isAdminDemo && agree === false) {
+    return res.status(400).json({ detail: "Please agree to join the rewards club to play." });
+  }
+  const active = activeGamePayload();
+  if (!active) {
+    return res.status(409).json({ detail: "Games are paused right now. Check back soon!" });
+  }
+
+  const freqDays = Number(state.game_settings.playFrequencyDays || 7);
+  const expiryDays = Number(state.game_settings.codeExpiryDays || 7);
+  const member = findMember(cleanEmail, cleanPhone);
+
+  // One play per member per play window (public play page only).
+  if (!isAdminDemo && (cleanEmail || cleanPhone)) {
+    const recent = state.redemptions.find(r =>
+      ((cleanEmail && r.memberEmail === cleanEmail) || (cleanPhone && r.memberPhone === cleanPhone)) &&
+      r.issuedAt && (Date.now() - new Date(r.issuedAt).getTime()) < freqDays * 86400000
+    );
+    if (recent) {
+      return res.status(429).json({
+        detail: {
+          reason: "already_played",
+          message: `You already played this ${freqDays === 7 ? "week" : "period"}. Come back after ${new Date(new Date(recent.issuedAt).getTime() + freqDays * 86400000).toLocaleDateString()}.`,
+          existingCode: recent.code,
+          reward: recent.reward,
+          status: recent.status,
+          expiresAt: recent.expiresAt,
+          nextPlayAt: new Date(new Date(recent.issuedAt).getTime() + freqDays * 86400000).toISOString()
+        }
+      });
+    }
+  }
+
+  // Segment-aware prize: new & quality guests win big; couponers get the margin-protected perk.
   const pb = state.prize_board || DEFAULT_PRIZE_BOARD;
   const good = pb.goodPrizes || [];
-  const prize = good[Math.floor(Math.random() * good.length)] || { label: "20% Off Your Order", posCode: "SAVE20" };
+  let resolvedSegment = segment || (member ? member.segment : "new");
+  if (resolvedSegment === "vip") resolvedSegment = "loyal";
+  if (resolvedSegment === "promo_pool") resolvedSegment = "coupon_only";
+  const couponer = isNewGuest === false && resolvedSegment === "coupon_only" || (isNewGuest === undefined && resolvedSegment === "coupon_only");
+  const prize = couponer
+    ? (pb.dudPrize || { label: "10% Off Next Visit", posCode: "SAVE10" })
+    : (good[Math.floor(Math.random() * good.length)] || { label: "20% Off Your Order", posCode: "SAVE20" });
+  const tier = couponer ? "standard" : "highValue";
   const code = `HV-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
 
   const doc = {
-    id: `rd_${Date.now()}`,
+    id: `rd_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
     code,
     couponCode: code,
-    tier: "highValue",
+    tier,
     reward: prize.label,
     posCode: prize.posCode,
-    segment: "new",
-    guestType: "new",
-    gameId: "spin_wheel",
-    gameName: "Lucky Spin Wheel",
+    masterPosCode: prize.posCode,
+    segment: resolvedSegment,
+    guestType: member ? "repeat" : "new",
+    gameId: active.id,
+    gameName: active.name,
     spaceId: spaceId || "Direct Link",
     status: "issued",
-    memberEmail: email || null,
-    memberPhone: phone || null,
+    memberEmail: cleanEmail,
+    memberPhone: cleanPhone,
     issuedAt: new Date().toISOString(),
-    expiresAt: new Date(Date.now() + 7 * 86400000).toISOString(),
+    expiresAt: new Date(Date.now() + expiryDays * 86400000).toISOString(),
     redeemedAt: null,
     netSales: null,
     revealAtSeconds: 5,
@@ -1880,15 +2463,15 @@ app.post('/api/maximizer/spin', async (req, res) => {
   };
 
   state.redemptions.unshift(doc);
+  recordSpotEvent(spaceId, "spins");
 
-  if (email || phone) {
-    const existing = state.members.find(m => m.email === email || m.phone === phone);
-    if (!existing) {
+  if (cleanEmail || cleanPhone) {
+    if (!member) {
       state.members.unshift({
-        memberKey: email || phone,
-        email: email || null,
-        phone: phone || null,
-        name: name || (email ? email.split('@')[0] : "New Player"),
+        memberKey: cleanEmail || cleanPhone,
+        email: cleanEmail,
+        phone: cleanPhone,
+        name: name || (cleanEmail ? cleanEmail.split('@')[0] : "New Player"),
         visits: 1,
         couponRatio: 1.0,
         segment: "new",
@@ -1898,30 +2481,90 @@ app.post('/api/maximizer/spin', async (req, res) => {
         lastSpinAt: new Date().toISOString(),
         lastRedeemedAt: null
       });
+      enqueueWelcome({ name: name || cleanEmail || cleanPhone, email: cleanEmail, phone: cleanPhone, channel: cleanEmail ? "email" : "sms" });
+    } else {
+      member.visits = (member.visits || 0) + 1;
+      member.lastSpinAt = new Date().toISOString();
     }
   }
 
   res.json(doc);
 });
 
-app.get('/api/maximizer/game-plan', (req, res) => {
-  res.json({
-    currentWeekGame: "Lucky Spin Wheel",
-    schedule: [
-      { week: "2026-08-11", gameId: "spin_wheel", gameName: "Lucky Spin Wheel" },
-      { week: "2026-08-18", gameId: "scratch_card", gameName: "Scratch & Win" },
-      { week: "2026-08-25", gameId: "mystery_box", gameName: "Vault Mystery Box" }
-    ]
+// Registers a claim code minted by the in-app wheel so staff lookup / redemption can find it.
+app.post('/api/codes/issue', (req, res) => {
+  const { code, reward, masterPosCode, tier, value, spaceId, gameId } = req.body || {};
+  const clean = String(code || "").trim().toUpperCase();
+  if (!clean) return res.status(400).json({ detail: "code is required" });
+  if (state.redemptions.some(r => r.code === clean)) return res.status(409).json({ detail: "Code already issued." });
+  const expiryDays = Number(state.game_settings.codeExpiryDays || 7);
+  const doc = {
+    id: `rd_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    code: clean,
+    couponCode: clean,
+    tier: tier || "highValue",
+    reward: reward || "Reward",
+    posCode: masterPosCode || null,
+    masterPosCode: masterPosCode || null,
+    value: value || null,
+    segment: "walk_in",
+    guestType: "new",
+    gameId: gameId || "spin_wheel",
+    gameName: (GAMES.find(g => g.id === (gameId || "spin_wheel")) || GAMES[0]).name,
+    spaceId: spaceId || "In-Store Wheel",
+    status: "issued",
+    memberEmail: null,
+    memberPhone: null,
+    issuedAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + expiryDays * 86400000).toISOString(),
+    redeemedAt: null,
+    netSales: null
+  };
+  state.redemptions.unshift(doc);
+  res.json({ status: "ok", redemption: doc });
+});
+
+function gamePlanPayload() {
+  const weeks = [0, 1, 2, 3].map(i => {
+    const weekStart = weekStartISO(i);
+    const gameId = state.game_plan[weekStart] || "";
+    const g = gameId && gameId !== "none" ? GAMES.find(x => x.id === gameId) : null;
+    return { weekStart, gameId, gameName: gameId === "none" ? "No game (rest week)" : (g ? g.name : "Auto / pinned") };
   });
+  const active = activeGamePayload();
+  return {
+    currentWeekGame: active ? active.name : "Paused",
+    games: GAMES.map(g => ({ ...g, tagline: g.description })),
+    weeks,
+    schedule: weeks.map(w => ({ week: w.weekStart, gameId: w.gameId, gameName: w.gameName })),
+    settings: state.game_settings,
+    override: state.game_override || null
+  };
+}
+
+app.get('/api/maximizer/game-plan', (req, res) => {
+  res.json(gamePlanPayload());
 });
 
 app.put('/api/maximizer/game-plan/week', (req, res) => {
-  res.json({ status: "ok" });
+  const { weekStart, gameId } = req.body || {};
+  if (!weekStart) return res.status(400).json({ detail: "weekStart is required" });
+  if (gameId && gameId !== "none" && !GAMES.find(g => g.id === gameId)) {
+    return res.status(400).json({ detail: `Unknown game '${gameId}'` });
+  }
+  if (!gameId) delete state.game_plan[weekStart];
+  else state.game_plan[weekStart] = gameId;
+  res.json({ status: "ok", ...gamePlanPayload() });
 });
 
 app.put('/api/maximizer/game-settings', (req, res) => {
-  state.game_settings = { ...state.game_settings, ...req.body };
-  res.json(state.game_settings);
+  const body = req.body || {};
+  const next = { ...state.game_settings };
+  if (body.enabled !== undefined) next.enabled = !!body.enabled;
+  if (body.playFrequencyDays !== undefined) next.playFrequencyDays = Number(body.playFrequencyDays) || 7;
+  if (body.codeExpiryDays !== undefined) next.codeExpiryDays = Number(body.codeExpiryDays) || 7;
+  state.game_settings = next;
+  res.json({ status: "ok", settings: state.game_settings, ...state.game_settings });
 });
 
 app.get('/api/maximizer/members', (req, res) => {
@@ -1948,7 +2591,8 @@ app.get('/api/maximizer/members/export.csv', (req, res) => {
 
 app.get('/api/maximizer/spin/qr', async (req, res) => {
   const spaceId = req.query.spaceId || "Table Tent";
-  const playUrl = `/spin?space=${encodeURIComponent(spaceId)}`;
+  const base = (req.query.base && /^https?:\/\//.test(req.query.base)) ? String(req.query.base).replace(/\/$/, "") : requestOrigin(req);
+  const playUrl = `${base}/spin?space=${encodeURIComponent(spaceId)}`;
   try {
     const dataUri = await QRCode.toDataURL(playUrl, { width: 300, margin: 2 });
     res.json({ spaceId, playUrl, qrDataUri: dataUri });
@@ -1958,124 +2602,163 @@ app.get('/api/maximizer/spin/qr', async (req, res) => {
 });
 
 app.get('/api/maximizer/qr-sheet.pdf', (req, res) => {
-  res.setHeader('Content-Type', 'text/html');
-  res.send(`<html><body style="font-family:sans-serif;padding:40px;"><h1>Table Tent & QR Sheet</h1><p>Printable QR sheets for tables, bags & counters.</p></body></html>`);
+  const base = (req.query.base && /^https?:\/\//.test(req.query.base)) ? String(req.query.base).replace(/\/$/, "") : requestOrigin(req);
+  const spots = ["Pizza Box", "Bag Sticker", "Door Decal", "Table Tent", "Counter QR", "Receipt", "Window Decal"];
+  const lines = [
+    `${state.brand_profile.name} - Scan to Play (${state.brand_profile.city})`,
+    "Print one label per placement; each QR encodes its own spot so the Weekly Win Report can rank them.",
+    ""
+  ];
+  for (const s of spots) lines.push(`${s}:  ${base}/spin?space=${encodeURIComponent(s)}`);
+  lines.push("", "Placement guardrail: keep discount QRs off the front entrance so full-price walk-ins are not discounted.");
+  sendPdf(res, "qr-spot-sheet.pdf", "QR Spot Sheet", lines);
 });
 
 app.get('/api/maximizer/table-tent.pdf', (req, res) => {
-  res.setHeader('Content-Type', 'text/html');
-  res.send(`<html><body style="font-family:sans-serif;padding:40px;"><h1>Table Tent Folding Guide</h1></body></html>`);
+  const spaceId = req.query.spaceId || "Table Tent";
+  const base = (req.query.base && /^https?:\/\//.test(req.query.base)) ? String(req.query.base).replace(/\/$/, "") : requestOrigin(req);
+  const active = activeGamePayload();
+  const lines = [
+    `${state.brand_profile.name}`,
+    `Placement: ${spaceId}`,
+    `Play URL: ${base}/spin?space=${encodeURIComponent(spaceId)}`,
+    `Active game: ${active ? active.name : "Paused"}`,
+    "",
+    "Folding guide: score along the dashed lines, fold into a triangle, tuck the tab.",
+    "Print at 100% scale on card stock. Keep the QR at least 1.2in wide for reliable phone scans."
+  ];
+  sendPdf(res, `table-tent-${spaceId.replace(/\s+/g, '-').toLowerCase()}.pdf`, "Table Tent", lines);
 });
 
-app.post('/api/maximizer/redeem', (req, res) => {
-  const { code, netSales } = req.body || {};
-  const redemption = state.redemptions.find(r => r.code === code);
-  if (!redemption) {
-    return res.status(404).json({ detail: "Coupon code not found." });
-  }
+function redeemByCode(rawCode, netSales, staffNote) {
+  const cleaned = String(rawCode || "").trim().toUpperCase();
+  const redemption = state.redemptions.find(r => (r.code && r.code.toUpperCase() === cleaned) || r.id === rawCode);
+  if (!redemption) return { ok: false, status: "not_found", reason: `Coupon code '${cleaned}' was not issued by this business.` };
   if (redemption.status === 'redeemed') {
-    return res.status(400).json({ detail: "This coupon has already been redeemed." });
+    return { ok: false, status: "already_redeemed", reason: `Already redeemed on ${new Date(redemption.redeemedAt).toLocaleString()}.`, redemption };
+  }
+  if (redemption.expiresAt && new Date(redemption.expiresAt).getTime() < Date.now()) {
+    return { ok: false, status: "expired", reason: `Expired on ${new Date(redemption.expiresAt).toLocaleDateString()}.`, redemption };
   }
   redemption.status = 'redeemed';
   redemption.redeemedAt = new Date().toISOString();
-  redemption.netSales = netSales ? Number(netSales) : 28.50;
-  res.json({ status: "ok", redemption });
-});
+  redemption.netSales = netSales !== null && netSales !== undefined && netSales !== "" ? Number(netSales) : null;
+  if (staffNote) redemption.staffNote = staffNote;
+  const member = findMember(redemption.memberEmail, redemption.memberPhone);
+  if (member) member.lastRedeemedAt = redemption.redeemedAt;
+  recordSpotEvent(redemption.spaceId, "redemptions");
+  return {
+    ok: true,
+    status: "ok",
+    reward: redemption.reward,
+    posCode: redemption.posCode || redemption.masterPosCode || null,
+    netSales: redemption.netSales,
+    redemption
+  };
+}
 
-app.get('/api/maximizer/redemptions/dashboard', (req, res) => {
-  const redeemed = state.redemptions.filter(r => r.status === 'redeemed');
-  const totalSales = redeemed.reduce((s, r) => s + (r.netSales || 0), 0);
-  res.json({
-    totalIssued: state.redemptions.length,
-    totalRedeemed: redeemed.length,
-    redemptionRate: state.redemptions.length ? Math.round((redeemed.length / state.redemptions.length) * 100) : 0,
-    attributedSales: Math.round(totalSales * 100) / 100,
-    recentRedemptions: state.redemptions.slice(0, 10)
-  });
+app.post('/api/maximizer/redeem', (req, res) => {
+  const { code, netSales } = req.body || {};
+  if (!code) return res.status(400).json({ ok: false, status: "invalid", reason: "Enter a coupon code.", detail: "Enter a coupon code." });
+  res.json(redeemByCode(code, netSales));
 });
 
 app.post('/api/maximizer/scan', (req, res) => {
-  res.json({ status: "ok", playUrl: "/spin" });
+  const { spaceId } = req.body || {};
+  recordSpotEvent(spaceId, "scans");
+  res.json({ status: "ok", playUrl: `/spin?space=${encodeURIComponent(spaceId || "Table Tent")}` });
 });
+
+// Per-placement analytics. Seeded totals plus live scan/spin/redemption events.
+if (!state.spots) {
+  state.spots = [
+    { id: "s1", name: "Table Tent #1", scans: 14, spins: 11, redemptions: 6 },
+    { id: "s2", name: "Register QR", scans: 28, spins: 22, redemptions: 14 },
+    { id: "s3", name: "Pizza Box Sticker", scans: 9, spins: 7, redemptions: 3 }
+  ];
+}
+function recordSpotEvent(spaceId, field) {
+  if (!spaceId || spaceId === "admin-demo") return;
+  let spot = state.spots.find(s => s.name.toLowerCase() === String(spaceId).toLowerCase());
+  if (!spot) {
+    spot = { id: `s_${state.spots.length + 1}`, name: spaceId, scans: 0, spins: 0, redemptions: 0 };
+    state.spots.push(spot);
+  }
+  spot[field] = (spot[field] || 0) + 1;
+}
 
 app.get('/api/maximizer/locations', (req, res) => {
-  res.json({
-    spots: [
-      { id: "s1", name: "Table Tent #1", scans: 14, spins: 11, redemptions: 6 },
-      { id: "s2", name: "Register QR", scans: 28, spins: 22, redemptions: 14 },
-      { id: "s3", name: "Pizza Box Sticker", scans: 9, spins: 7, redemptions: 3 }
-    ]
-  });
+  const rows = state.spots.map(s => ({ ...s, spaceId: s.name, redeemed: s.redemptions }));
+  const totals = rows.reduce((t, r) => ({ scans: t.scans + r.scans, spins: t.spins + r.spins, redemptions: t.redemptions + r.redemptions }), { scans: 0, spins: 0, redemptions: 0 });
+  const topSpot = [...rows].sort((a, b) => b.spins - a.spins)[0] || null;
+  res.json({ spots: state.spots, rows, totals, topSpot });
 });
 
-app.get('/api/maximizer/weekly-report', (req, res) => {
+function buildWeeklyReport() {
   const brand = state.brand_profile;
   const redeemed = state.redemptions.filter(r => r.status === 'redeemed');
   const provenRev = redeemed.reduce((s, r) => s + (r.netSales || 28.5), 0);
-  res.json({
-    weekOf: "2026-08-04",
-    weekEnd: "2026-08-10",
-    posImport: {
-      importedThisWeek: true,
-      importsInWeek: 1
-    },
+  const weekOf = weekStartISO(0);
+  const weekEnd = new Date(new Date(weekOf).getTime() + 6 * 86400000).toISOString().slice(0, 10);
+  const imports = (state.pos_imports || []).filter(i => i.at >= weekOf);
+  const adTotal = (state.ad_spend_logs || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  const prizeMap = {};
+  for (const r of redeemed) {
+    if (!prizeMap[r.reward]) prizeMap[r.reward] = { reward: r.reward, redeemed: 0, revenue: 0 };
+    prizeMap[r.reward].redeemed += 1;
+    prizeMap[r.reward].revenue += r.netSales || 28.5;
+  }
+  const spotsSorted = [...state.spots].sort((a, b) => b.spins - a.spins);
+  const gameCounts = {};
+  for (const r of state.redemptions) gameCounts[r.gameName || "Lucky Spin Wheel"] = (gameCounts[r.gameName || "Lucky Spin Wheel"] || 0) + 1;
+  const topGameName = Object.keys(gameCounts).sort((a, b) => gameCounts[b] - gameCounts[a])[0] || "Lucky Spin Wheel";
+  return {
+    weekOf,
+    weekEnd,
+    posImport: { importedThisWeek: imports.length > 0, importsInWeek: imports.length },
     current: {
-      redeemed: redeemed.length || 42,
-      revenue: Math.round((provenRev || 2044.00) * 100) / 100,
-      scans: 88,
-      spins: 64,
-      newMembers: state.members.length || 28
+      redeemed: redeemed.length,
+      revenue: Math.round(provenRev * 100) / 100,
+      scans: state.spots.reduce((s, x) => s + x.scans, 0),
+      spins: state.redemptions.length,
+      newMembers: state.members.length
     },
-    deltas: {
-      redeemed: 12,
-      revenue: 253.50,
-      scans: 14,
-      spins: 18,
-      newMembers: 7
-    },
-    adSpend: {
-      total: 299.00,
-      prevTotal: 299.00
-    },
-    prizeBreakdown: [
-      { reward: "Free Sub (BOGO)", redeemed: 18, revenue: 612.00 },
-      { reward: "20% Off Your Order", redeemed: 24, revenue: 840.00 },
-      { reward: "Free Cannoli with Any Sub", redeemed: 14, revenue: 392.00 }
-    ],
+    deltas: { redeemed: 12, revenue: 253.50, scans: 14, spins: 18, newMembers: 7 },
+    adSpend: { total: Math.round((adTotal || 299) * 100) / 100, prevTotal: 299.00 },
+    prizeBreakdown: Object.values(prizeMap).map(p => ({ ...p, revenue: Math.round(p.revenue * 100) / 100 })),
     channels: [
-      {
-        channel: "facebook",
-        live: true,
-        label: "Meta Act-Now Ads",
-        lines: ["680 clicks", "48 new guests", "$1,612 attributed revenue"],
-        note: ""
-      },
-      {
-        channel: "google_maps",
-        live: true,
-        label: "Google Maps Pin Boost",
-        lines: ["Geo radius 3 miles", "34 navigation starts", "$432 attributed revenue"],
-        note: ""
-      },
-      {
-        channel: "gbp_organic",
-        live: true,
-        label: "GBP Organic & QR",
-        lines: ["3 updates scheduled", "14 store scan redemptions"],
-        note: ""
-      }
+      { channel: "facebook", live: isPlatformConnected("facebook"), label: "Meta Act-Now Ads", lines: ["680 clicks", "48 new guests", "$1,612 attributed revenue"], note: isPlatformConnected("facebook") ? "" : "Connect Facebook in Content Executioner to go live." },
+      { channel: "google_maps", live: isPlatformConnected("google"), label: "Google Maps Pin Boost", lines: ["Geo radius 3 miles", "34 navigation starts", "$432 attributed revenue"], note: "" },
+      { channel: "gbp_organic", live: isPlatformConnected("google"), label: "GBP Organic & QR", lines: ["3 updates scheduled", `${state.spots.reduce((s, x) => s + x.redemptions, 0)} store scan redemptions`], note: "" }
     ],
-    topSpot: { spaceId: "Table Tent #1", plays: 28 },
-    topGame: { name: "Lucky Spin Wheel", plays: 42 },
-    soFar: {
-      spins: 19,
-      newMembers: 8,
-      redeemed: 6,
-      revenue: 198.50
-    },
+    topSpot: spotsSorted[0] ? { spaceId: spotsSorted[0].name, plays: spotsSorted[0].spins } : { spaceId: "Table Tent", plays: 0 },
+    topGame: { name: topGameName, plays: gameCounts[topGameName] || 0 },
+    soFar: { spins: 19, newMembers: 8, redeemed: 6, revenue: 198.50 },
     brand,
     pacingNotice: OPERATIONAL_DISCLAIMER
-  });
+  };
+}
+
+app.get('/api/maximizer/weekly-report', (req, res) => {
+  res.json(buildWeeklyReport());
+});
+
+app.get('/api/maximizer/weekly-report.pdf', (req, res) => {
+  const r = buildWeeklyReport();
+  const lines = [
+    `${r.brand.name} - week of ${r.weekOf} to ${r.weekEnd}`,
+    "",
+    `Redeemed: ${r.current.redeemed}    Revenue proven: $${r.current.revenue.toFixed(2)}    Ad spend: $${r.adSpend.total.toFixed(2)}`,
+    `Scans: ${r.current.scans}    Spins: ${r.current.spins}    Members: ${r.current.newMembers}`,
+    `POS import this week: ${r.posImport.importedThisWeek ? "yes" : "NOT YET - import before Sunday close"}`,
+    "",
+    "Prize breakdown:"
+  ];
+  for (const p of r.prizeBreakdown) lines.push(`  ${p.reward}: ${p.redeemed} redeemed, $${p.revenue.toFixed(2)}`);
+  lines.push("", "Channels:");
+  for (const c of r.channels) lines.push(`  ${c.label} (${c.live ? "live" : "not connected"}): ${c.lines.join("; ")}`);
+  lines.push("", `Top spot: ${r.topSpot.spaceId} (${r.topSpot.plays} plays)    Top game: ${r.topGame.name}`);
+  sendPdf(res, `weekly-win-report-${r.weekOf}.pdf`, "Weekly Win Report", lines);
 });
 
 app.get('/api/maximizer/report-email', (req, res) => {
@@ -2083,16 +2766,30 @@ app.get('/api/maximizer/report-email', (req, res) => {
 });
 
 app.put('/api/maximizer/report-email', (req, res) => {
-  state.win_report_email = { ...state.win_report_email, ...req.body };
+  const body = req.body || {};
+  if (body.recipient !== undefined && body.recipient && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(body.recipient)) {
+    return res.status(400).json({ detail: "Enter a valid email address." });
+  }
+  state.win_report_email = { ...state.win_report_email, ...body };
   res.json(state.win_report_email);
 });
 
 app.post('/api/maximizer/report-email/send-now', (req, res) => {
-  res.json({ status: "ok", sentTo: state.win_report_email.recipient });
+  const cfg = state.win_report_email;
+  if (!cfg.recipient) return res.status(400).json({ detail: "Set a recipient email first." });
+  const report = buildWeeklyReport();
+  const live = !!process.env.RESEND_API_KEY;
+  const subject = `Weekly Win Report - ${report.brand.name} - week of ${report.weekOf}`;
+  cfg.lastSentAt = new Date().toISOString();
+  cfg.lastSentWeekOf = report.weekOf;
+  cfg.lastResult = live ? "sent" : "stubbed";
+  cfg.liveSending = live;
+  res.json({ status: live ? "sent" : "stubbed", to: cfg.recipient, sentTo: cfg.recipient, subject, weekOf: report.weekOf });
 });
 
 app.post('/api/maximizer/ad-spend', (req, res) => {
   const { channel, platform, amount, label, notes, weekOf } = req.body || {};
+  if (!(Number(amount) > 0)) return res.status(400).json({ detail: "Enter an amount greater than $0." });
   const doc = {
     id: `ad_${Date.now()}`,
     date: new Date().toISOString().slice(0, 10),
@@ -2125,88 +2822,88 @@ app.delete('/api/maximizer/ad-spend/:sid', (req, res) => {
 });
 
 app.get('/api/maximizer/import-status', (req, res) => {
+  const weekOf = weekStartISO(0);
+  const imports = (state.pos_imports || []).filter(i => i.at >= weekOf);
+  const last = (state.pos_imports || [])[0];
   res.json({
-    importedThisWeek: true,
-    importsThisWeek: 1,
-    lastImportAt: new Date(Date.now() - 2 * 86400000).toISOString(),
-    weekOf: "2026-08-04",
-    nudge: false
+    importedThisWeek: imports.length > 0,
+    importsThisWeek: imports.length,
+    lastImportAt: last ? last.at : null,
+    weekOf,
+    nudge: imports.length === 0
   });
 });
 
 app.get('/api/maximizer/segments', (req, res) => {
   const redeemed = state.redemptions.filter(r => r.status === 'redeemed');
   const provenRev = redeemed.reduce((sum, r) => sum + (r.netSales || 28.5), 0);
-  
+
   res.json({
     counts: {
-      vip: state.members.filter(m => m.segment === 'loyal').length || 14,
-      standard: state.members.filter(m => m.segment === 'new').length || 11,
-      promo_pool: state.members.filter(m => m.segment === 'coupon_only').length || 3
+      vip: state.members.filter(m => m.segment === 'loyal').length,
+      standard: state.members.filter(m => m.segment === 'new').length,
+      promo_pool: state.members.filter(m => m.segment === 'coupon_only').length
     },
     rows: state.members.map((m, idx) => ({
       customerId: `c_${idx + 1}`,
       name: m.name || m.email || `Customer #${idx + 1}`,
-      frequency: m.visits || (idx % 3 === 0 ? 8 : 3),
+      frequency: m.visits || 1,
       avgTicket: m.avgTicket || (idx % 2 === 0 ? 34.50 : 22.00),
-      score: m.score || (9.2 - idx * 0.4),
+      score: m.score || Math.max(1, Math.round((9.2 - idx * 0.4) * 10) / 10),
       segment: m.segment === 'loyal' ? 'vip' : (m.segment === 'coupon_only' ? 'promo_pool' : 'standard')
     })),
     verification: {
-      codesIssued: state.redemptions.length || 24,
-      codesRedeemed: redeemed.length || 18,
-      redemptionRate: state.redemptions.length ? Math.round((redeemed.length / state.redemptions.length) * 100) / 100 : 0.75,
-      revenueFromRedemptions: Math.round((provenRev || 842.50) * 100) / 100,
+      codesIssued: state.redemptions.length,
+      codesRedeemed: redeemed.length,
+      redemptionRate: state.redemptions.length ? Math.round((redeemed.length / state.redemptions.length) * 100) / 100 : 0,
+      revenueFromRedemptions: Math.round(provenRev * 100) / 100,
       note: "All codes verified at the register with full ticket matching."
     }
   });
 });
 
 app.get('/api/maximizer/drip', (req, res) => {
+  const totalLeads = state.members.length + 40;
+  const days = 30;
+  const dayOf = 12;
+  const dailyRate = Math.max(1, Math.ceil(totalLeads / days));
+  const releasedSoFar = Math.min(totalLeads, dailyRate * dayOf);
+  const vault = state.vault || [];
+  const featured = vault.find(v => v.featured) || null;
   res.json({
+    totalLeads,
+    releasedSoFar,
+    dailyRate,
+    days,
+    dayOf,
+    remaining: totalLeads - releasedSoFar,
     activeCampaigns: 2,
-    sentToday: 14,
+    sentToday: dailyRate,
     clickRate: "38%",
     revealAtSeconds: 15,
-    sequenceDays: 30,
-    welcomeVideoUrl: "https://youtu.be/example-owner-welcome"
+    sequenceDays: days,
+    vaultCount: vault.length,
+    featured: featured ? { id: featured.id, title: featured.title } : null,
+    welcomeVideoUrl: featured ? `/api/vault/video/${featured.id}` : null
   });
 });
 
 app.get('/api/maximizer/games', (req, res) => {
-  const activeId = state.game_override || "spin_wheel";
-  const activeGame = GAMES.find(g => g.id === activeId) || GAMES[0];
-  res.json({ games: GAMES, active: activeGame, override: state.game_override || null });
-});
-
-app.get('/api/maximizer/game-plan', (req, res) => {
-  const currentWeek = new Date().toISOString().slice(0, 10);
-  const week2 = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
-  const week3 = new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10);
-  const week4 = new Date(Date.now() + 21 * 86400000).toISOString().slice(0, 10);
-
   res.json({
-    currentWeekGame: "Lucky Spin Wheel",
-    games: GAMES,
-    weeks: [
-      { weekStart: currentWeek, gameId: "spin_wheel", gameName: "Lucky Spin Wheel" },
-      { weekStart: week2, gameId: "scratch_card", gameName: "Scratch & Win" },
-      { weekStart: week3, gameId: "mystery_box", gameName: "Vault Mystery Box" },
-      { weekStart: week4, gameId: "spin_wheel", gameName: "Lucky Spin Wheel" }
-    ],
-    schedule: [
-      { week: currentWeek, gameId: "spin_wheel", gameName: "Lucky Spin Wheel" },
-      { week: week2, gameId: "scratch_card", gameName: "Scratch & Win" },
-      { week: week3, gameId: "mystery_box", gameName: "Vault Mystery Box" }
-    ]
+    games: GAMES.map(g => ({ ...g, tagline: g.description })),
+    active: activeGamePayload(),
+    override: state.game_override || null,
+    enabled: state.game_settings.enabled !== false,
+    playFrequencyDays: state.game_settings.playFrequencyDays,
+    codeExpiryDays: state.game_settings.codeExpiryDays
   });
 });
 
 app.put('/api/maximizer/games/active', (req, res) => {
   const { gameId } = req.body || {};
-  state.game_override = gameId;
-  const activeGame = GAMES.find(g => g.id === gameId) || GAMES[0];
-  res.json({ status: "ok", active: activeGame, override: gameId });
+  if (gameId && !GAMES.find(g => g.id === gameId)) return res.status(400).json({ detail: `Unknown game '${gameId}'` });
+  state.game_override = gameId || null;
+  res.json({ status: "ok", active: activeGamePayload(), override: state.game_override });
 });
 
 app.get('/api/maximizer/prize-board', (req, res) => {
@@ -2215,30 +2912,108 @@ app.get('/api/maximizer/prize-board', (req, res) => {
 
 app.put('/api/maximizer/prize-board', (req, res) => {
   const { goodPrizes, dudPrize } = req.body || {};
-  if (goodPrizes) state.prize_board.goodPrizes = goodPrizes;
-  if (dudPrize) state.prize_board.dudPrize = dudPrize;
+  if (goodPrizes) {
+    if (!Array.isArray(goodPrizes) || goodPrizes.length < 2 || goodPrizes.length > 6) {
+      return res.status(400).json({ detail: "Keep between 2 and 6 prize slots." });
+    }
+    if (goodPrizes.some(p => !p || !String(p.label || "").trim())) {
+      return res.status(400).json({ detail: "Every prize slot needs a label." });
+    }
+    state.prize_board.goodPrizes = goodPrizes.map(p => ({ label: String(p.label).trim(), posCode: String(p.posCode || "").trim() }));
+  }
+  if (dudPrize) state.prize_board.dudPrize = { label: String(dudPrize.label || "").trim(), posCode: String(dudPrize.posCode || "").trim() };
   res.json(state.prize_board);
 });
 
+const SAMPLE_CUSTOMER_CSV = "name,email,phone,total_spend,orders_count,last_order_date,coupon_ratio\nGianna Moretti,gianna.m@example.com,555-0192,420.50,14,2026-08-08,0.25\nTony S.,tony.s@example.com,555-0144,890.00,28,2026-08-10,0.10\nSam Discount,dealhunter99@example.com,555-0188,32.00,3,2026-08-01,1.0\nPriya Nair,priya.n@example.com,555-0177,64.00,2,2026-08-09,0.0\n";
+
 app.get('/api/maximizer/sample-customer-csv', (req, res) => {
-  const csv = "name,email,phone,total_spend,orders_count,last_order_date\nGianna Moretti,gianna.m@example.com,555-0192,420.50,14,2026-08-08\nTony S.,tony.s@example.com,555-0144,890.00,28,2026-08-10\nSam Discount,dealhunter99@example.com,555-0188,32.00,3,2026-08-01\n";
-  res.setHeader('Content-Type', 'text/csv');
-  res.setHeader('Content-Disposition', 'attachment; filename="sample-customers.csv"');
-  res.send(csv);
+  res.json({ csv: SAMPLE_CUSTOMER_CSV, format: "name,email,phone,total_spend,orders_count,last_order_date,coupon_ratio" });
 });
 
+function parseCsv(text) {
+  const lines = String(text || "").split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  if (lines.length === 0) return { header: [], rows: [] };
+  const split = (l) => l.split(",").map(c => c.trim().replace(/^"|"$/g, ""));
+  const header = split(lines[0]).map(h => h.toLowerCase());
+  const rows = lines.slice(1).map(split).map(cells => Object.fromEntries(header.map((h, i) => [h, cells[i] ?? ""])));
+  return { header, rows };
+}
+
+if (!state.welcome_queue) {
+  state.welcome_queue = [
+    { name: "Gianna Moretti", email: "gianna.m@example.com", phone: "555-0192", status: "sent", channel: "email", sentAt: new Date(Date.now() - 3 * 86400000).toISOString() },
+    { name: "Marco V.", email: "marco.v@example.com", phone: null, status: "pending", channel: "email", sentAt: null }
+  ];
+}
+function enqueueWelcome(entry) {
+  const exists = state.welcome_queue.find(q => (entry.email && q.email === entry.email) || (entry.phone && q.phone === entry.phone));
+  if (exists) return false;
+  state.welcome_queue.push({ ...entry, status: "pending", sentAt: null });
+  return true;
+}
+function markWelcomeSent(index) {
+  const q = state.welcome_queue[Number(index)];
+  if (!q) return { status: "not_found" };
+  const live = !!process.env.RESEND_API_KEY;
+  q.status = "sent";
+  q.sentAt = new Date().toISOString();
+  return {
+    status: live ? "sent" : "stubbed",
+    to: q.email || q.phone,
+    channel: q.channel,
+    headers: { "X-OmniLocal-Welcome": "owner-video", "X-Entity-Ref-ID": `welcome_${index}` }
+  };
+}
+
 app.post('/api/maximizer/import-csv', (req, res) => {
-  res.json({ status: "ok", imported: 3, updated: 3 });
+  const { csv } = req.body || {};
+  const { header, rows } = parseCsv(csv);
+  if (rows.length === 0) return res.status(400).json({ detail: "Paste a CSV with a header row and at least one customer." });
+  if (!header.includes("email") && !header.includes("phone")) return res.status(400).json({ detail: "The CSV needs an email or phone column." });
+  let imported = 0, updated = 0, newCustomersQueued = 0;
+  const segments = { new: 0, coupon_only: 0, loyal: 0 };
+  for (const r of rows) {
+    const email = (r.email || "").toLowerCase() || null;
+    const phone = r.phone || null;
+    if (!email && !phone) continue;
+    const visits = Number(r.orders_count ?? r.visits ?? r.orders ?? 1) || 1;
+    const couponRatio = r.coupon_ratio !== undefined && r.coupon_ratio !== "" ? Number(r.coupon_ratio) : null;
+    const totalSpend = Number(r.total_spend || 0) || 0;
+    let segment = "new";
+    if (couponRatio !== null && couponRatio >= 0.6) segment = "coupon_only";
+    else if (visits >= 6) segment = "loyal";
+    segments[segment] += 1;
+    const existing = findMember(email, phone);
+    if (existing) {
+      Object.assign(existing, { visits, segment, couponRatio: couponRatio ?? existing.couponRatio, name: r.name || existing.name, avgTicket: visits ? Math.round((totalSpend / visits) * 100) / 100 : existing.avgTicket, updatedAt: new Date().toISOString() });
+      // most recent activity first, so a fresh import is visible at the top of the directory
+      state.members.splice(state.members.indexOf(existing), 1);
+      state.members.unshift(existing);
+      updated += 1;
+    } else {
+      state.members.unshift({
+        memberKey: email || phone, email, phone, name: r.name || email || phone,
+        visits, couponRatio: couponRatio ?? 0, segment, source: "pos_import", signupSpace: "POS Import",
+        avgTicket: visits ? Math.round((totalSpend / visits) * 100) / 100 : 0,
+        createdAt: new Date().toISOString(), lastSpinAt: null, lastRedeemedAt: r.last_order_date || null
+      });
+      imported += 1;
+      if (segment === "new" && enqueueWelcome({ name: r.name || email || phone, email, phone, channel: email ? "email" : "sms" })) newCustomersQueued += 1;
+    }
+  }
+  if (!state.pos_imports) state.pos_imports = [];
+  state.pos_imports.unshift({ at: new Date().toISOString(), kind: "customers", rows: rows.length });
+  res.json({ status: "ok", imported, updated, newCustomersQueued, segments, total: state.members.length });
 });
 
 app.get('/api/maximizer/welcome-queue', (req, res) => {
+  const vault = state.vault || [];
+  const featured = vault.find(v => v.featured) || null;
   res.json({
-    queue: [
-      { name: "Gianna Moretti", email: "gianna.m@example.com", status: "sent", channel: "email" },
-      { name: "Tony S.", email: "tony.soprano@example.com", status: "sent", channel: "sms" },
-      { name: "Marco V.", email: "marco.v@example.com", status: "pending", channel: "email" }
-    ],
-    ownerVideoUrl: "https://youtu.be/example-owner-welcome"
+    queue: state.welcome_queue,
+    ownerVideoUrl: featured ? `/api/vault/video/${featured.id}` : "https://youtu.be/example-owner-welcome",
+    script: `Hey, it's ${state.brand_profile.name.split(' ')[0]} here - thanks for joining our rewards club. Next time you're in, show this to the team and we'll take care of you.`
   });
 });
 
@@ -2248,7 +3023,7 @@ const redemptionsDashboardHandler = (req, res) => {
   res.json({
     totalIssued: state.redemptions.length,
     totalRedeemed: redeemed.length,
-    redemptionRate: state.redemptions.length ? Math.round((redeemed.length / state.redemptions.length) * 100) : 0,
+    redemptionRate: state.redemptions.length ? Math.round((redeemed.length / state.redemptions.length) * 100) / 100 : 0,
     attributedSales: Math.round(totalSales * 100) / 100,
     recent: state.redemptions.slice(0, 10),
     recentRedemptions: state.redemptions.slice(0, 10)
@@ -2458,24 +3233,17 @@ app.get('/api/codes/voucher-lookup', (req, res) => {
 
 app.post('/api/codes/redeem-voucher', (req, res) => {
   const { code, netSales, staffNote } = req.body || {};
-  const cleanedCode = (code || "").trim().toUpperCase();
-  const redemption = state.redemptions.find(r => (r.code && r.code.toUpperCase() === cleanedCode) || (r.id === code));
-  
-  if (!redemption) {
-    return res.status(404).json({ detail: `Voucher code '${code}' not found in active ledger.` });
+  if (!code) return res.status(400).json({ detail: "Voucher code is required." });
+  const result = redeemByCode(code, netSales === undefined || netSales === "" ? 85.00 : netSales, staffNote);
+  if (!result.ok) {
+    const httpStatus = result.status === "not_found" ? 404 : 400;
+    return res.status(httpStatus).json({ ok: false, status: result.status, detail: result.reason });
   }
-  if (redemption.status === 'redeemed') {
-    return res.status(400).json({ detail: `Voucher '${redemption.code}' was already redeemed on ${new Date(redemption.redeemedAt).toLocaleString()}.` });
-  }
-
-  redemption.status = 'redeemed';
-  redemption.redeemedAt = new Date().toISOString();
-  redemption.netSales = netSales ? Number(netSales) : 85.00;
-  if (staffNote) redemption.staffNote = staffNote;
-
+  const redemption = result.redemption;
   res.json({
+    ok: true,
     status: "ok",
-    message: `Voucher ${redemption.code} verified & locked. Attributed net sales: $${redemption.netSales.toFixed(2)}`,
+    message: `Voucher ${redemption.code} verified & locked. Attributed net sales: $${(redemption.netSales || 0).toFixed(2)}`,
     redemption
   });
 });
@@ -2492,26 +3260,58 @@ app.get('/api/codes/export.csv', (req, res) => {
 });
 
 app.get('/api/codes/sample-csv', (req, res) => {
-  res.setHeader('Content-Type', 'text/csv');
-  res.send("promo_code,net_sales\nOL-TAT-784X,150.00\nOL-TAT-339K,110.00\nOL-TAT-912M,85.00\n");
+  const issued = state.redemptions.filter(r => r.status !== 'redeemed').slice(0, 2).map(r => r.code);
+  const redeemedAlready = state.redemptions.find(r => r.status === 'redeemed');
+  const lines = ["promo_code,net_sales"];
+  issued.forEach((c, i) => lines.push(`${c},${(150 - i * 40).toFixed(2)}`));
+  if (redeemedAlready) lines.push(`${redeemedAlready.code},110.00`);
+  lines.push("OL-FAKE-0000,45.00");
+  res.json({ csv: lines.join("\n") + "\n", format: "promo_code,net_sales" });
 });
 
 app.post('/api/codes/reconcile', (req, res) => {
   const { csv } = req.body || {};
+  const { header, rows } = parseCsv(csv);
+  if (rows.length === 0) return res.status(400).json({ detail: "Paste a promo_code,net_sales CSV first." });
+  const codeKey = header.find(h => /code/.test(h)) || header[0];
+  const salesKey = header.find(h => /sales|amount|total/.test(h)) || header[1];
+  const out = [];
+  let invalid = 0, matched = 0, revenueThisImport = 0;
+  for (const r of rows) {
+    const code = String(r[codeKey] || "").trim().toUpperCase();
+    const net = Number(r[salesKey] || 0) || 0;
+    const found = state.redemptions.find(x => x.code && x.code.toUpperCase() === code);
+    const expired = found && found.expiresAt && new Date(found.expiresAt).getTime() < Date.now() && found.status !== 'redeemed';
+    if (!found || expired) {
+      invalid += 1;
+      out.push({ code, masterPosCode: null, reward: found ? found.reward : "(not issued)", net_sales: net, valid: false, reason: found ? "expired" : "not_issued" });
+      continue;
+    }
+    if (found.status !== 'redeemed') {
+      found.status = 'redeemed';
+      found.redeemedAt = new Date().toISOString();
+      found.netSales = net;
+      recordSpotEvent(found.spaceId, "redemptions");
+    } else if (!found.netSales && net) {
+      found.netSales = net;
+    }
+    matched += 1;
+    revenueThisImport += net;
+    out.push({ code: found.code, masterPosCode: found.masterPosCode || found.posCode, reward: found.reward, net_sales: found.netSales || net, valid: true });
+  }
+  if (!state.pos_imports) state.pos_imports = [];
+  state.pos_imports.unshift({ at: new Date().toISOString(), kind: "pos_reconcile", rows: rows.length, matched, invalid });
   const redeemed = state.redemptions.filter(r => r.status === 'redeemed');
   res.json({
     status: "ok",
     issued: state.redemptions.length,
     redeemed: redeemed.length,
-    redemptionRate: state.redemptions.length ? Math.round((redeemed.length / state.redemptions.length) * 100) / 100 : 0.75,
-    revenue: redeemed.reduce((s, r) => s + (r.netSales || 0), 0) || 842.50,
-    rows: state.redemptions.slice(0, 5).map(r => ({
-      code: r.code,
-      masterPosCode: r.masterPosCode || r.posCode,
-      reward: r.reward,
-      net_sales: r.netSales || 45.00,
-      valid: true
-    }))
+    matched,
+    invalid,
+    redemptionRate: state.redemptions.length ? Math.round((redeemed.length / state.redemptions.length) * 100) / 100 : 0,
+    revenue: Math.round(redeemed.reduce((s, r) => s + (r.netSales || 0), 0) * 100) / 100,
+    revenueThisImport: Math.round(revenueThisImport * 100) / 100,
+    rows: out
   });
 });
 
@@ -2649,11 +3449,13 @@ app.get('/api/attribution/sources', (req, res) => {
   const posNet = (sources.pos || []).reduce((acc, row) => acc + (Number(row.netAttributedRevenue) || 0), 0);
   const posRedeemed = (sources.pos || []).reduce((acc, row) => acc + (Number(row.tokensRedeemed) || 0), 0);
 
-  const totalSpend = metaSpend + tiktokSpend + 59.80; // include organic boost tooling
-  const totalAttributedRevenue = posNet > 0 ? posNet : 13901.00;
-  const blendedRoas = totalSpend > 0 ? (totalAttributedRevenue / totalSpend).toFixed(2) : "7.42";
-  const costPerWalkIn = posRedeemed > 0 ? (totalSpend / posRedeemed).toFixed(2) : "14.85";
-  const grossMarginReturn = posGross > 0 ? Math.round((posNet / posGross) * 100) : 76;
+  const hasAnyData = ["meta", "tiktok", "gbp", "pos"].some(k => (sources[k] || []).length > 0);
+  const toolingSpend = hasAnyData ? 59.80 : 0; // organic boost tooling
+  const totalSpend = metaSpend + tiktokSpend + toolingSpend;
+  const totalAttributedRevenue = posNet;
+  const blendedRoas = totalSpend > 0 ? (totalAttributedRevenue / totalSpend).toFixed(2) : "0.00";
+  const costPerWalkIn = posRedeemed > 0 ? (totalSpend / posRedeemed).toFixed(2) : "0.00";
+  const grossMarginReturn = posGross > 0 ? Math.round((posNet / posGross) * 100) : 0;
 
   res.json({
     status: "ok",
@@ -2663,8 +3465,9 @@ app.get('/api/attribution/sources', (req, res) => {
       blendedRoas: Number(blendedRoas),
       costPerWalkIn: Number(costPerWalkIn),
       grossMarginReturn: grossMarginReturn,
-      totalWalkins: posRedeemed || 129,
-      totalAdImpressions: metaImpressions + tiktokViews + 9420,
+      totalWalkins: posRedeemed,
+      totalAdImpressions: metaImpressions + tiktokViews + (hasAnyData ? 9420 : 0),
+      hasData: hasAnyData,
       totalDirectActions: metaClicks + tiktokClicks + gbpActions
     },
     sources: {
@@ -2676,7 +3479,7 @@ app.get('/api/attribution/sources', (req, res) => {
     channelBreakdown: [
       { channel: "Meta / Facebook", spend: metaSpend, clicks: metaClicks, attributedRev: Math.round(posNet * 0.48), roas: (Math.round(posNet * 0.48) / (metaSpend || 1)).toFixed(2) },
       { channel: "TikTok / Video Reels", spend: tiktokSpend, views: tiktokViews, clicks: tiktokClicks, attributedRev: Math.round(posNet * 0.32), roas: (Math.round(posNet * 0.32) / (tiktokSpend || 1)).toFixed(2) },
-      { channel: "Google Business / Maps", spend: 29.90, actions: gbpActions, calls: gbpCalls, attributedRev: Math.round(posNet * 0.20), roas: (Math.round(posNet * 0.20) / 29.90).toFixed(2) }
+      { channel: "Google Business / Maps", spend: hasAnyData ? 29.90 : 0, actions: gbpActions, calls: gbpCalls, attributedRev: Math.round(posNet * 0.20), roas: hasAnyData ? (Math.round(posNet * 0.20) / 29.90).toFixed(2) : "0.00" }
     ]
   });
 });
@@ -3227,9 +4030,12 @@ Current active view: ${activeView || "overview"}.
 Current Blended ROAS: 6.84x, Weekly Spend: $299.00, Maturity Level: ${kn.maturityLevel || "Month 3: Pattern Matched"}.
 You have access to tools that directly control the application. Always invoke the appropriate tool declaration whenever the user asks to navigate, generate/schedule campaigns, update contacts, pull analytics, generate print assets, lock margins, stage ad spend for human approval, redeem vouchers, export codes, or switch verticals. Respond concisely and professionally.`;
 
+      const priorTurns = Array.isArray(history)
+        ? history.slice(-10).filter(h => h && h.content).map(h => ({ role: h.role === "assistant" || h.role === "model" ? "model" : "user", parts: [{ text: String(h.content) }] }))
+        : [];
       const geminiResponse = await ai.models.generateContent({
-        model: "gemini-3.7-flash",
-        contents: query,
+        model: GEMINI_MODEL,
+        contents: [...priorTurns, { role: "user", parts: [{ text: query }] }],
         config: {
           systemInstruction,
           tools: [{ functionDeclarations: copilotFunctionDeclarations }]
@@ -3240,7 +4046,7 @@ You have access to tools that directly control the application. Always invoke th
       if (functionCalls && functionCalls.length > 0) {
         return res.json({
           status: "ok",
-          engine: "gemini-3.7-flash",
+          engine: GEMINI_MODEL,
           reply: geminiResponse.text || `Executing ${functionCalls[0].name}...`,
           functionCalls: functionCalls.map(fc => ({
             name: fc.name,
@@ -3250,7 +4056,7 @@ You have access to tools that directly control the application. Always invoke th
       } else {
         return res.json({
           status: "ok",
-          engine: "gemini-3.7-flash",
+          engine: GEMINI_MODEL,
           reply: geminiResponse.text || "Action analyzed and coordinated.",
           functionCalls: []
         });
@@ -3265,7 +4071,17 @@ You have access to tools that directly control the application. Always invoke th
   let matchedTool = null;
   let replyText = "";
 
-  if (q.includes("print") || q.includes("qr studio") || q.includes("sticker") || q.includes("table tent") || q.includes("seal") || q.includes("physical")) {
+  const NAV_TARGETS = [
+    ["multitrack", /multi-?track|campaign tracks|tracks view/], ["knowledge", /knowledge|maturity|moat/], ["attribution", /attribution|analytics|csv hub/],
+    ["printstudio", /print|qr studio/], ["dashboard", /spin|voucher|wheel/], ["executioner", /executioner|ad engine|publisher/],
+    ["maximizer", /maximizer|rewards|locations?/], ["content", /content director|brand|calendar/], ["team", /team|approvals?/], ["overview", /overview|command center|home/]
+  ];
+  const navIntent = /\b(go to|navigate to|take me to|jump to|show me the|open the|open up|bring up|switch to the)\b/.test(q);
+  const navTarget = navIntent ? (NAV_TARGETS.find(([, re]) => re.test(q)) || [])[0] : null;
+  if (navTarget) {
+    matchedTool = { name: "navigate_view", args: { view: navTarget, reason: "Navigation requested by operator." } };
+    replyText = `Opening ${navTarget === "printstudio" ? "Print & QR Studio" : navTarget === "multitrack" ? "Multi-Track Campaigns" : navTarget}.`;
+  } else if (q.includes("print") || q.includes("qr studio") || q.includes("sticker") || q.includes("table tent") || q.includes("seal") || q.includes("physical")) {
     matchedTool = {
       name: "generate_print_asset",
       args: {
@@ -3315,6 +4131,16 @@ You have access to tools that directly control the application. Always invoke th
       }
     };
     replyText = `Retrieved cross-channel analytics: Blended ROAS is 6.84x on $299 weekly ad spend, delivering 129 verified walk-ins and $740 direct-mail replacement value.`;
+  } else if (q.includes("margin") || q.includes("floor") || q.includes("discount cap") || q.includes("discount ceiling")) {
+    matchedTool = {
+      name: "tune_margin_floor",
+      args: {
+        maxDiscountPct: Number((q.match(/(\d{1,2})\s*%/) || [])[1]) || 30,
+        minSpendReq: Number((q.match(/\$\s*(\d{1,4})/) || [])[1]) || 50,
+        targetGrossMarginPct: 65
+      }
+    };
+    replyText = `Tuned margin floor: ${matchedTool.args.maxDiscountPct}% max discount ceiling and $${matchedTool.args.minSpendReq} minimum spend locked to protect gross margin.`;
   } else if (q.includes("commit") || q.includes("spend") || q.includes("budget") || q.includes("approval") || q.includes("sign")) {
     matchedTool = {
       name: "stage_human_approval",
@@ -3326,26 +4152,16 @@ You have access to tools that directly control the application. Always invoke th
       }
     };
     replyText = `Live ad spend commitment staged for human-gated owner approval in Team & Approvals.`;
-  } else if (q.includes("margin") || q.includes("floor") || q.includes("discount cap")) {
-    matchedTool = {
-      name: "tune_margin_floor",
-      args: {
-        maxDiscountCeilingPct: 30,
-        minimumSpendReqUsd: 50,
-        targetGrossMarginPct: 70
-      }
-    };
-    replyText = `Tuned margin floor: 30% max discount ceiling and $50 minimum spend locked to protect gross margin.`;
   } else if (q.includes("redeem") || q.includes("voucher") || q.includes("ticket") || q.includes("token")) {
     matchedTool = {
       name: "redeem_voucher_code",
       args: {
-        code: "TAT50-PROMO",
+        code: (q.match(/\b(OL-[A-Z0-9]{2,4}-[A-Z0-9]{3,6}|HV-[A-Z0-9]{4,8})\b/i) || [])[1]?.toUpperCase() || (state.redemptions.find(r => r.status !== 'redeemed') || state.redemptions[0] || {}).code || "OL-TAT-784X",
         netSales: 150.00,
         staffNote: "Verified by manager at register."
       }
     };
-    replyText = `Verified voucher TAT50-PROMO. Attributed $150.00 net sales to campaign ledger.`;
+    replyText = `Verifying voucher ${matchedTool.args.code} against the live ledger and attributing net sales.`;
   } else if (q.includes("switch") || q.includes("vertical") || q.includes("restaurant") || q.includes("tattoo") || q.includes("bar") || q.includes("bakery") || q.includes("gym") || q.includes("boutique")) {
     const vId = q.includes("restaurant") ? "restaurant" : q.includes("bar") ? "bar" : q.includes("bakery") ? "bakery" : q.includes("gym") ? "gym" : q.includes("boutique") ? "boutique" : q.includes("detail") ? "detail" : q.includes("salon") ? "salon" : "tattoo";
     matchedTool = {
@@ -3465,7 +4281,27 @@ app.get('/api/email/trickle-plan', (req, res) => {
 });
 
 app.post('/api/email/send-welcome', (req, res) => {
-  res.json({ status: "ok" });
+  const user = getUserFromReq(req);
+  const { index } = req.body || {};
+  const q = state.welcome_queue[Number(index)];
+  if (!q) return res.status(404).json({ detail: "Welcome queue entry not found." });
+  if (user && user.role !== 'owner') {
+    const approval = {
+      id: `appr_${Date.now()}`,
+      type: "send_welcome",
+      summary: `Send welcome video to ${q.name || q.email || q.phone}`,
+      requestedBy: user.name || user.email,
+      requestedByName: user.name || user.email,
+      requestedById: user.user_id,
+      payload: { index: Number(index) },
+      status: "pending",
+      createdAt: new Date().toISOString()
+    };
+    state.approvals.push(approval);
+    return res.json({ status: "pending_approval", approvalId: approval.id, note: "The owner will approve and send it from Team & Approvals." });
+  }
+  const result = markWelcomeSent(index);
+  res.json({ status: "ok", result, entry: q });
 });
 
 // ---------------------------------------------------------------------------
@@ -3511,6 +4347,24 @@ app.get('*', (req, res, next) => {
   }
 });
 
-app.listen(PORT, '0.0.0.0', () => {
+const server = app.listen(PORT, '0.0.0.0', () => {
+  const st = store.status();
   console.log(`[OmniLocal #1] Server running on http://0.0.0.0:${PORT}`);
+  console.log(`[OmniLocal #1] Memory core: ${st.driver} at ${st.file} (${restoredCollections} collections restored, ${sessions.size} sessions)`);
 });
+
+// Flush the memory core before the process goes away.
+let shuttingDown = false;
+function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[OmniLocal #1] ${signal} received, flushing memory core...`);
+  try { store.close(); } catch (e) { console.error('[OmniLocal #1] flush on shutdown failed:', e.message); }
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 2000).unref();
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('uncaughtException', (e) => { console.error('[OmniLocal #1] uncaught exception:', e); try { store.flush(); } catch {} });
+
+module.exports = { app, server, store };

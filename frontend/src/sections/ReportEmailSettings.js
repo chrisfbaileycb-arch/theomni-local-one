@@ -20,6 +20,7 @@ export const ReportEmailSettings = () => {
   if (!cfg) return null;
 
   const save = async (body) => {
+    setCfg((prev) => ({ ...prev, ...body })); // optimistic: keep the controlled inputs responsive
     try {
       const c = await setReportEmail(body);
       setCfg(c);
