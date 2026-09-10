@@ -5,7 +5,7 @@ import { getCoachTemplates } from "@/lib/api";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
 import { Clapperboard, Sparkles, Video, Share2, Rocket, CheckCircle2, MinusCircle, Loader2, Upload, FileVideo } from "lucide-react";
-import { getPrompts, postCopy, postCritic, publishAll, criticUploadInit, criticUploadChunk, criticAnalyze, criticVideoUrl } from "@/lib/api";
+import { getPrompts, postCopy, postCritic, publishAll, criticUploadInit, criticUploadChunk, criticUploadFinalize, criticAnalyze, criticVideoUrl } from "@/lib/api";
 import { SectionTitle, Overline, GradeBadge } from "@/components/ui-bits";
 import LocalMarketIntel from "@/sections/LocalMarketIntel";
 import ContentCalendar from "@/sections/ContentCalendar";
@@ -91,13 +91,14 @@ export default function ContentDirector() {
     setUploadState("uploading"); setUploadPct(0);
     setReport(null); setUploadedVideo(null); setTranscriptResult(null);
     try {
-      const { uploadId } = await criticUploadInit(file.name);
       const CHUNK = 1024 * 1024;
       const total = Math.max(1, Math.ceil(file.size / CHUNK));
+      const { uploadId } = await criticUploadInit(file.name, total);
       for (let i = 0; i < total; i++) {
         await criticUploadChunk(uploadId, i, file.slice(i * CHUNK, (i + 1) * CHUNK));
         setUploadPct(Math.round(((i + 1) / total) * 100));
       }
+      await criticUploadFinalize(uploadId);
       setUploadState("analyzing");
       toast.message("Analyzing your clip", { description: "Transcribing audio (Whisper) + inspecting framing (vision AI)…" });
       const res = await criticAnalyze(uploadId, file.name, templateId || null);

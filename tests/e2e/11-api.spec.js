@@ -64,10 +64,12 @@ test.describe('API contract', () => {
 
     const vault = await j(await request.get('/api/vault'));
     expect(vault).toEqual(expect.objectContaining({ prompts: expect.any(Array), capturedCount: expect.any(Number), totalPrompts: 4, totalVideos: expect.any(Number), custom: expect.any(Array) }));
-    const init = await j(await request.post('/api/content/critic/upload/init', { data: { filename: 'api.mp4' } }));
+    const init = await j(await request.post('/api/content/critic/upload/init', { data: { filename: 'api.mp4', totalChunks: 1 } }));
     const chunk = await request.post('/api/content/critic/upload/chunk', { multipart: { uploadId: init.uploadId, index: '0', chunk: { name: 'chunk', mimeType: 'application/octet-stream', buffer: Buffer.alloc(2048, 1) } } });
     expect((await j(chunk)).bytes).toBe(2048);
     expect((await request.post('/api/content/critic/upload/chunk', { multipart: { uploadId: 'nope', index: '0', chunk: { name: 'c', mimeType: 'application/octet-stream', buffer: Buffer.alloc(10) } } })).status()).toBe(404);
+    expect((await request.post('/api/content/critic/upload/chunk', { multipart: { uploadId: init.uploadId, index: '1', chunk: { name: 'c', mimeType: 'application/octet-stream', buffer: Buffer.alloc(10) } } })).status()).toBe(400);
+    await j(await request.post('/api/content/critic/upload/finalize', { data: { uploadId: init.uploadId } }));
     const analysis = await j(await request.post('/api/content/critic/analyze', { data: { uploadId: init.uploadId, filename: 'api.mp4' } }));
     expect(analysis.videoUrl).toBe(`/api/content/critic/video/${init.uploadId}`);
     expect((await request.get(analysis.videoUrl)).headers()['content-type']).toContain('video/mp4');
@@ -81,6 +83,28 @@ test.describe('API contract', () => {
     expect((await j(await request.get('/api/maximizer/drip'))).featured.id).toBe(saved.id);
     await j(await request.delete(`/api/vault/${saved.id}`));
     expect((await request.get(`/api/vault/video/${saved.id}`)).status()).toBe(404);
+
+    // Ito QA regression: delivery order and duplicate retries must not alter file order or size.
+    const ordered = await j(await request.post('/api/content/critic/upload/init', { data: { filename: 'ordered.mp4', totalChunks: 3 } }));
+    const parts = [Buffer.from('chunk-zero|'), Buffer.from('chunk-one|'), Buffer.from('chunk-two')];
+    for (const index of [1, 0, 2, 1]) {
+      await j(await request.post('/api/content/critic/upload/chunk', {
+        multipart: { uploadId: ordered.uploadId, index: String(index), chunk: { name: 'chunk', mimeType: 'application/octet-stream', buffer: parts[index] } }
+      }));
+    }
+    const finalized = await j(await request.post('/api/content/critic/upload/finalize', { data: { uploadId: ordered.uploadId } }));
+    expect(finalized).toMatchObject({ status: 'ready', chunks: 3, bytes: Buffer.concat(parts).length });
+    const orderedMedia = await request.get(`/api/content/critic/video/${ordered.uploadId}`);
+    expect(Buffer.compare(await orderedMedia.body(), Buffer.concat(parts))).toBe(0);
+    const finalizedAgain = await j(await request.post('/api/content/critic/upload/finalize', { data: { uploadId: ordered.uploadId } }));
+    expect(finalizedAgain).toMatchObject({ status: 'ready', chunks: 3 });
+
+    const incomplete = await j(await request.post('/api/content/critic/upload/init', { data: { filename: 'incomplete.mp4', totalChunks: 2 } }));
+    await j(await request.post('/api/content/critic/upload/chunk', {
+      multipart: { uploadId: incomplete.uploadId, index: '0', chunk: { name: 'chunk', mimeType: 'application/octet-stream', buffer: Buffer.from('only-one') } }
+    }));
+    expect((await request.post('/api/content/critic/upload/finalize', { data: { uploadId: incomplete.uploadId } })).status()).toBe(400);
+    expect((await request.get(`/api/content/critic/video/${incomplete.uploadId}`)).status()).toBe(404);
 
     const calendar = await j(await request.get('/api/content/calendar'));
     expect(calendar.weeks[0].days.length).toBe(7);

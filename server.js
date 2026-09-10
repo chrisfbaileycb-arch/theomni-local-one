@@ -1490,7 +1490,17 @@ app.post('/api/content/critic', (req, res) => {
 const UPLOAD_DIR = process.env.OMNILOCAL_UPLOAD_DIR || path.join(DATA_DIR, 'uploads');
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 const chunkUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
+const MAX_UPLOAD_BYTES = 80 * 1024 * 1024;
+const MAX_UPLOAD_CHUNKS = 1000;
 if (!state.uploads) state.uploads = {};
+// Uploads completed by releases before indexed staging remain playable after upgrade.
+for (const upload of Object.values(state.uploads)) {
+  if (upload && !upload.receivedChunks && upload.filePath && fs.existsSync(upload.filePath)) {
+    upload.totalChunks = upload.chunks || 1;
+    upload.finalized = true;
+    upload.finalizedAt = upload.createdAt;
+  }
+}
 const VIDEO_MIME = { mp4: "video/mp4", mov: "video/quicktime", webm: "video/webm", m4v: "video/x-m4v", mkv: "video/x-matroska" };
 function videoMime(filename) {
   const ext = String(filename || "").split('.').pop().toLowerCase();
@@ -1500,12 +1510,21 @@ function safeName(name) { return String(name || "clip.mp4").replace(/[^a-zA-Z0-9
 
 app.post('/api/content/critic/upload/init', (req, res) => {
   const filename = safeName(req.body?.filename);
+  const totalChunks = Number(req.body?.totalChunks || 1);
+  if (!Number.isInteger(totalChunks) || totalChunks < 1 || totalChunks > MAX_UPLOAD_CHUNKS) {
+    return res.status(400).json({ detail: `totalChunks must be an integer between 1 and ${MAX_UPLOAD_CHUNKS}.` });
+  }
   const uploadId = `up_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+  const chunkDir = path.join(UPLOAD_DIR, `tmp_${uploadId}`);
   const filePath = path.join(UPLOAD_DIR, `${uploadId}_${filename}`);
   fs.mkdirSync(UPLOAD_DIR, { recursive: true }); // self-heal if the data dir was recreated
-  fs.writeFileSync(filePath, "");
-  state.uploads[uploadId] = { uploadId, filename, filePath, chunks: 0, bytes: 0, createdAt: new Date().toISOString() };
-  res.json({ uploadId, filename });
+  fs.mkdirSync(chunkDir, { recursive: true });
+  state.uploads[uploadId] = {
+    uploadId, filename, filePath, chunkDir, totalChunks,
+    receivedChunks: {}, chunks: 0, bytes: 0, finalized: false,
+    createdAt: new Date().toISOString()
+  };
+  res.json({ uploadId, filename, totalChunks });
 });
 
 app.post('/api/content/critic/upload/chunk', chunkUpload.single('chunk'), (req, res) => {
@@ -1513,15 +1532,60 @@ app.post('/api/content/critic/upload/chunk', chunkUpload.single('chunk'), (req, 
   const up = state.uploads[uploadId];
   if (!up) return res.status(404).json({ detail: "Unknown upload. Start the upload again." });
   if (!req.file || !req.file.buffer) return res.status(400).json({ detail: "No chunk received." });
-  fs.appendFileSync(up.filePath, req.file.buffer);
-  up.chunks += 1;
-  up.bytes += req.file.buffer.length;
-  res.json({ status: "ok", uploadId, index: Number(index), chunks: up.chunks, bytes: up.bytes });
+  if (up.finalized) return res.status(409).json({ detail: "This upload is already finalized." });
+  const chunkIndex = Number(index);
+  if (!Number.isInteger(chunkIndex) || chunkIndex < 0 || chunkIndex >= up.totalChunks) {
+    return res.status(400).json({ detail: `Chunk index must be between 0 and ${up.totalChunks - 1}.` });
+  }
+  const previousBytes = Number(up.receivedChunks?.[chunkIndex] || 0);
+  const nextBytes = up.bytes - previousBytes + req.file.buffer.length;
+  if (nextBytes > MAX_UPLOAD_BYTES) return res.status(413).json({ detail: "Video exceeds the 80 MB upload limit." });
+  fs.mkdirSync(up.chunkDir, { recursive: true });
+  const chunkPath = path.join(up.chunkDir, `chunk_${chunkIndex}.part`);
+  const temporaryPath = `${chunkPath}.${crypto.randomBytes(3).toString('hex')}.tmp`;
+  fs.writeFileSync(temporaryPath, req.file.buffer);
+  fs.renameSync(temporaryPath, chunkPath);
+  if (!up.receivedChunks) up.receivedChunks = {};
+  up.receivedChunks[chunkIndex] = req.file.buffer.length;
+  up.chunks = Object.keys(up.receivedChunks).length;
+  up.bytes = nextBytes;
+  res.json({ status: "ok", uploadId, index: chunkIndex, chunks: up.chunks, bytes: up.bytes });
+});
+
+app.post('/api/content/critic/upload/finalize', (req, res) => {
+  const { uploadId } = req.body || {};
+  const up = state.uploads[uploadId];
+  if (!up) return res.status(404).json({ detail: "Unknown upload. Start the upload again." });
+  if (up.finalized && fs.existsSync(up.filePath)) {
+    return res.json({ status: "ready", uploadId, chunks: up.chunks, bytes: up.bytes });
+  }
+  const missing = [];
+  for (let i = 0; i < up.totalChunks; i++) {
+    if (!fs.existsSync(path.join(up.chunkDir, `chunk_${i}.part`))) missing.push(i);
+  }
+  if (missing.length) return res.status(400).json({ detail: `Missing chunk indexes: ${missing.join(', ')}.` });
+
+  const assemblyPath = `${up.filePath}.assembling`;
+  try {
+    fs.writeFileSync(assemblyPath, '');
+    for (let i = 0; i < up.totalChunks; i++) {
+      fs.appendFileSync(assemblyPath, fs.readFileSync(path.join(up.chunkDir, `chunk_${i}.part`)));
+    }
+    fs.renameSync(assemblyPath, up.filePath);
+    fs.rmSync(up.chunkDir, { recursive: true, force: true });
+    up.finalized = true;
+    up.finalizedAt = new Date().toISOString();
+    return res.json({ status: "ready", uploadId, chunks: up.chunks, bytes: up.bytes });
+  } catch (error) {
+    try { fs.rmSync(assemblyPath, { force: true }); } catch {}
+    return res.status(500).json({ detail: "Could not assemble the uploaded video. Please retry finalization." });
+  }
 });
 
 app.get('/api/content/critic/video/:uploadId', (req, res) => {
   const up = state.uploads[req.params.uploadId];
   if (!up || !fs.existsSync(up.filePath)) return res.status(404).json({ detail: "Upload not found." });
+  if (!up.finalized) return res.status(409).json({ detail: "Upload is not finalized." });
   res.setHeader('Content-Type', videoMime(up.filename));
   res.sendFile(up.filePath);
 });
@@ -1541,6 +1605,7 @@ app.post('/api/content/critic/analyze', async (req, res) => {
   const b = state.brand_profile || {};
   const up = uploadId ? state.uploads[uploadId] : null;
   if (uploadId && !up) return res.status(404).json({ detail: "Upload not found. Please upload the clip again." });
+  if (up && !up.finalized) return res.status(409).json({ detail: "Upload is not finalized. Please finish the upload first." });
   if (up && up.bytes === 0) return res.status(400).json({ detail: "The uploaded clip is empty. Try a short MP4/MOV with sound." });
   const sizeMb = up ? up.bytes / (1024 * 1024) : 0;
   const measured = {
@@ -2001,6 +2066,7 @@ app.post('/api/vault/save', (req, res) => {
   const { title, promptId, filename, uploadId } = req.body || {};
   const up = uploadId ? state.uploads[uploadId] : null;
   if (uploadId && !up) return res.status(404).json({ detail: "Upload not found. Please upload the clip again." });
+  if (up && !up.finalized) return res.status(409).json({ detail: "Upload is not finalized. Please finish the upload first." });
   if (up && up.bytes === 0) return res.status(400).json({ detail: "The uploaded clip is empty. Try a short MP4/MOV." });
   const id = `v_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
   let filePath = null;

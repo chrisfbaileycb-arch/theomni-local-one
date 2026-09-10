@@ -60,9 +60,12 @@ test.describe('memory core', () => {
       const spin = await (await api.post('/api/maximizer/spin', { data: { agree: true, email: 'core@example.com', spaceId: 'Core Test' } })).json();
       const ad = await (await api.post('/api/maximizer/ad-spend', { data: { platform: 'facebook', label: 'core-spend', amount: 12.5 } })).json();
       await api.post('/api/auth/change-password', { data: { currentPassword: MASTER_PASSWORD, newPassword: 'core-password-1' } });
-      const up = await (await api.post('/api/content/critic/upload/init', { data: { filename: 'core.mp4' } })).json();
+      const up = await (await api.post('/api/content/critic/upload/init', { data: { filename: 'core.mp4', totalChunks: 1 } })).json();
       await api.post('/api/content/critic/upload/chunk', { multipart: { uploadId: up.uploadId, index: '0', chunk: { name: 'chunk', mimeType: 'application/octet-stream', buffer: Buffer.alloc(4096, 3) } } });
+      await api.post('/api/content/critic/upload/finalize', { data: { uploadId: up.uploadId } });
       const clip = await (await api.post('/api/vault/save', { data: { uploadId: up.uploadId, filename: 'core.mp4', promptId: 'v_p1', title: 'Core clip' } })).json();
+      const resumedUp = await (await api.post('/api/content/critic/upload/init', { data: { filename: 'resume.mp4', totalChunks: 2 } })).json();
+      await api.post('/api/content/critic/upload/chunk', { multipart: { uploadId: resumedUp.uploadId, index: '1', chunk: { name: 'chunk', mimeType: 'application/octet-stream', buffer: Buffer.from('second') } } });
       const backup = await (await api.get('/api/admin/backup')).json();
       expect(backup.collections.brand_profile.name).toBe('Persisted Studio');
       expect(backup.collections.master_password_hash).toBeUndefined();
@@ -83,6 +86,10 @@ test.describe('memory core', () => {
       expect(spend.entries.some((e) => e.id === ad.entry.id)).toBeTruthy();
       const media = await api.get(`/api/vault/video/${clip.id}`);
       expect(media.status()).toBe(200);
+      await api.post('/api/content/critic/upload/chunk', { multipart: { uploadId: resumedUp.uploadId, index: '0', chunk: { name: 'chunk', mimeType: 'application/octet-stream', buffer: Buffer.from('first') } } });
+      expect((await api.post('/api/content/critic/upload/finalize', { data: { uploadId: resumedUp.uploadId } })).ok()).toBeTruthy();
+      const resumedMedia = await api.get(`/api/content/critic/video/${resumedUp.uploadId}`);
+      expect((await resumedMedia.body()).toString()).toBe('firstsecond');
       // The changed master password is the one that works now.
       const fresh = await playwright.request.newContext({ baseURL: BASE });
       expect((await fresh.post('/api/auth/login', { data: { email: 'owner@ironandneedle.com', password: MASTER_PASSWORD } })).status()).toBe(401);
