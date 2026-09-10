@@ -22,5 +22,6 @@ npx playwright show-report           # HTML report after a run
 | `09-copilot` | Co-Captain sidebar controls, free-text commands and all eight quick-action chips (including approval + CSV export popup) |
 | `10-public` | scan-to-play page (signup validation, win, one-play-per-week), paused games, pricing -> checkout -> payment result |
 | `11-api` | every Express route: status codes, error paths and the response shapes the UI reads |
+| `12-persistence` | memory core: boots its own server on port 3111, restarts it, and checks data / sessions / uploads survive, plus backup, restore, reset and owner-only access |
 
 Helpers in `helpers.js` attach console/network watchers (`watchPage` / `expectClean`) so a test fails if any API call errors unexpectedly. `fixtures.js` aborts requests to non-local hosts (Google Fonts) so page loads are not held up in sandboxed CI.

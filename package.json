@@ -3,12 +3,12 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "node server.js",
+    "dev": "node --disable-warning=ExperimentalWarning server.js",
     "postinstall": "cd frontend && npm install --legacy-peer-deps && npm run build",
     "build": "npm run build:frontend",
     "build:frontend": "cd frontend && npm install --legacy-peer-deps && npm run build",
     "lint": "node -e \"console.log('Lint ok')\"",
-    "start": "node server.js",
+    "start": "node --disable-warning=ExperimentalWarning server.js",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui"
   },

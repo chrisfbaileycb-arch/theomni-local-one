@@ -8,15 +8,24 @@ const QRCode = require('qrcode');
 const bcrypt = require('bcryptjs');
 const os = require('os');
 const multer = require('multer');
+const { Store } = require('./lib/store');
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.7-flash";
+// Durable data directory (SQLite store + uploaded media). Mount this as a volume in production.
+const DATA_DIR = process.env.OMNILOCAL_DATA_DIR || path.join(__dirname, 'data');
+const APP_VERSION = require('./package.json').version;
+const BOOT_AT = Date.now();
 
 app.use(cors({ origin: true, credentials: true }));
 app.use(cookieParser());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use('/api', (req, res, next) => {
+  if (req.method !== 'GET' && req.method !== 'HEAD') res.on('finish', () => store.markDirty());
+  next();
+});
 
 // ---------------------------------------------------------------------------
 // IN-MEMORY DATABASE & PERSISTENT SEEDS
@@ -720,10 +729,18 @@ state.campaign_tracks = [
     recentCreative: "Verified Studio Profile & Live 5-Star Walk-In Pin"
   }
 ];
+// ---------------------------------------------------------------------------
+// MEMORY CORE: everything above is the seed; whatever was saved earlier wins.
+// ---------------------------------------------------------------------------
+const SEED_STATE = JSON.parse(JSON.stringify(state));
+const store = new Store({ dataDir: DATA_DIR });
+const restoredCollections = store.loadInto(state, sessions);
 sessions.set("tok_owner_default", { userId: defaultOwner.user_id, expires: Date.now() + 30 * 86400000 });
 
-// Master password (owner sign-in without Google). Override with MASTER_PASSWORD.
-state.master_password_hash = bcrypt.hashSync(process.env.MASTER_PASSWORD || "omnilocal", 8);
+// Master password (owner sign-in without Google). MASTER_PASSWORD, when set, is authoritative;
+// otherwise the password last saved from Team & Approvals is kept across restarts.
+const BOOT_MASTER_HASH = bcrypt.hashSync(process.env.MASTER_PASSWORD || "omnilocal", 8);
+if (process.env.MASTER_PASSWORD || !state.master_password_hash) state.master_password_hash = BOOT_MASTER_HASH;
 const SIGNED_OUT_TOKEN = "signed_out";
 const MAX_MEMBERS = 3;
 
@@ -767,7 +784,7 @@ function issueSession(res, user) {
 
 // Paths reachable without an activated seat (public play page, auth, payments).
 const OPEN_PATH_PATTERNS = [
-  /^\/api\/?$/, /^\/api\/auth\//, /^\/api\/payments\//,
+  /^\/api\/?$/, /^\/api\/health\/?$/, /^\/api\/auth\//, /^\/api\/payments\//,
   /^\/api\/maximizer\/(spin|games|scan)\/?$/
 ];
 
@@ -789,7 +806,64 @@ app.use('/api', (req, res, next) => {
 
 // Root
 app.get('/api', (req, res) => {
-  res.json({ service: "omnilocal-1-revenue-engine", status: "ok" });
+  res.json({ service: "omnilocal-1-revenue-engine", status: "ok", version: APP_VERSION });
+});
+
+// Health: liveness + storage status (open path, safe for load balancers).
+app.get('/api/health', (req, res) => {
+  const st = store.status();
+  res.json({
+    status: "ok",
+    version: APP_VERSION,
+    uptimeSec: Math.round((Date.now() - BOOT_AT) / 1000),
+    storage: st,
+    counts: {
+      users: state.users.length,
+      members: state.members.length,
+      redemptions: state.redemptions.length,
+      vault: (state.vault || []).length,
+      approvals: (state.approvals || []).length
+    }
+  });
+});
+
+// Admin (owner only): backup / restore / reset of the memory core.
+function requireOwner(req, res) {
+  const user = getUserFromReq(req);
+  if (!user || user.role !== 'owner') { res.status(403).json({ detail: "owner_only" }); return null; }
+  return user;
+}
+
+app.get('/api/admin/backup', (req, res) => {
+  if (!requireOwner(req, res)) return;
+  const snap = store.snapshot();
+  delete snap.collections.master_password_hash; // never export credentials
+  delete snap.collections.uploads;
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Content-Disposition', `attachment; filename="omnilocal-backup-${stamp}.json"`);
+  res.send(JSON.stringify(snap, null, 2));
+});
+
+app.post('/api/admin/restore', (req, res) => {
+  if (!requireOwner(req, res)) return;
+  const snap = req.body?.snapshot || req.body;
+  try {
+    const applied = store.restore(snap);
+    res.json({ status: "ok", collections: applied.length, applied });
+  } catch (e) {
+    res.status(400).json({ detail: e.message });
+  }
+});
+
+app.post('/api/admin/reset', (req, res) => {
+  if (!requireOwner(req, res)) return;
+  if (req.body?.confirm !== "RESET") return res.status(400).json({ detail: 'Send { "confirm": "RESET" } to wipe live data and reload the demo seed.' });
+  store.reset(SEED_STATE);
+  state.master_password_hash = BOOT_MASTER_HASH;
+  if (!Array.isArray(state.calendar_posts)) seedCalendar();
+  store.flush();
+  res.json({ status: "ok", message: "Memory core reset to the demo seed." });
 });
 
 // Auth
@@ -1413,7 +1487,7 @@ app.post('/api/content/critic', (req, res) => {
 // ---------------------------------------------------------------------------
 // CHUNKED VIDEO UPLOADS (Video Critic + Vault)
 // ---------------------------------------------------------------------------
-const UPLOAD_DIR = process.env.OMNILOCAL_UPLOAD_DIR || path.join(os.tmpdir(), 'omnilocal-uploads');
+const UPLOAD_DIR = process.env.OMNILOCAL_UPLOAD_DIR || path.join(DATA_DIR, 'uploads');
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 const chunkUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
 if (!state.uploads) state.uploads = {};
@@ -1428,6 +1502,7 @@ app.post('/api/content/critic/upload/init', (req, res) => {
   const filename = safeName(req.body?.filename);
   const uploadId = `up_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
   const filePath = path.join(UPLOAD_DIR, `${uploadId}_${filename}`);
+  fs.mkdirSync(UPLOAD_DIR, { recursive: true }); // self-heal if the data dir was recreated
   fs.writeFileSync(filePath, "");
   state.uploads[uploadId] = { uploadId, filename, filePath, chunks: 0, bytes: 0, createdAt: new Date().toISOString() };
   res.json({ uploadId, filename });
@@ -1570,7 +1645,7 @@ function seedCalendar() {
     { id: newPostId(), date: addDaysISO(mon, 10), time: "12:00", title: "Local Farm Sourcing", surface: "Facebook Reels", source: "prompt", status: "draft" }
   ];
 }
-seedCalendar();
+if (!Array.isArray(state.calendar_posts)) seedCalendar();
 
 const buildCalendarResponse = () => {
   const mon = weekStartISO(0);
@@ -1931,6 +2006,7 @@ app.post('/api/vault/save', (req, res) => {
   let filePath = null;
   if (up) {
     filePath = path.join(UPLOAD_DIR, `vault_${id}_${safeName(up.filename)}`);
+    fs.mkdirSync(UPLOAD_DIR, { recursive: true });
     fs.renameSync(up.filePath, filePath);
     delete state.uploads[uploadId];
   }
@@ -1980,7 +2056,7 @@ app.post('/api/vault/:vid/feature', (req, res) => {
 });
 
 // Quality Content Executioner (weekly learning loop)
-const DEFAULT_REPORTS = JSON.parse(JSON.stringify(state.reports));
+const DEFAULT_REPORTS = JSON.parse(JSON.stringify(SEED_STATE.reports));
 if (!state.transactions) state.transactions = [];
 const CHANNEL_LABELS = {
   facebook_act_now_ads: "Meta Act-Now Ads",
@@ -2910,7 +2986,10 @@ app.post('/api/maximizer/import-csv', (req, res) => {
     segments[segment] += 1;
     const existing = findMember(email, phone);
     if (existing) {
-      Object.assign(existing, { visits, segment, couponRatio: couponRatio ?? existing.couponRatio, name: r.name || existing.name, avgTicket: visits ? Math.round((totalSpend / visits) * 100) / 100 : existing.avgTicket });
+      Object.assign(existing, { visits, segment, couponRatio: couponRatio ?? existing.couponRatio, name: r.name || existing.name, avgTicket: visits ? Math.round((totalSpend / visits) * 100) / 100 : existing.avgTicket, updatedAt: new Date().toISOString() });
+      // most recent activity first, so a fresh import is visible at the top of the directory
+      state.members.splice(state.members.indexOf(existing), 1);
+      state.members.unshift(existing);
       updated += 1;
     } else {
       state.members.unshift({
@@ -4268,6 +4347,24 @@ app.get('*', (req, res, next) => {
   }
 });
 
-app.listen(PORT, '0.0.0.0', () => {
+const server = app.listen(PORT, '0.0.0.0', () => {
+  const st = store.status();
   console.log(`[OmniLocal #1] Server running on http://0.0.0.0:${PORT}`);
+  console.log(`[OmniLocal #1] Memory core: ${st.driver} at ${st.file} (${restoredCollections} collections restored, ${sessions.size} sessions)`);
 });
+
+// Flush the memory core before the process goes away.
+let shuttingDown = false;
+function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[OmniLocal #1] ${signal} received, flushing memory core...`);
+  try { store.close(); } catch (e) { console.error('[OmniLocal #1] flush on shutdown failed:', e.message); }
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 2000).unref();
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('uncaughtException', (e) => { console.error('[OmniLocal #1] uncaught exception:', e); try { store.flush(); } catch {} });
+
+module.exports = { app, server, store };

@@ -105,3 +105,6 @@ frontend/node_modules/.cache/default-development/1.pack
 /playwright-report/
 /blob-report/
 /playwright/.cache/
+
+# Memory core (SQLite + uploads)
+/data/

@@ -11,6 +11,7 @@ import {
 import { SectionTitle, Overline } from "@/components/ui-bits";
 import { useAuth } from "@/lib/AuthContext";
 import { MasterPasswordCard } from "@/sections/MasterPassword";
+import { DataCoreCard } from "@/sections/DataCore";
 
 const TYPE_LABELS = { publish_all: "Publish-All Blast", send_welcome: "Welcome Email" };
 const CHIP = {
@@ -195,6 +196,9 @@ export default function Team() {
 
           {/* Master password */}
           <MasterPasswordCard />
+
+          {/* Memory core */}
+          <DataCoreCard onChanged={load} />
         </div>
       )}
 

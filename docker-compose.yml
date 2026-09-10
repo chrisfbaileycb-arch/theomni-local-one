@@ -4,5 +4,13 @@ services:
     ports:
       - "3000:3000"
     environment:
-      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      MASTER_PASSWORD: ${MASTER_PASSWORD:-}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      OMNILOCAL_DATA_DIR: /app/data
+    volumes:
+      - omnilocal-data:/app/data
     restart: unless-stopped
+
+volumes:
+  omnilocal-data:

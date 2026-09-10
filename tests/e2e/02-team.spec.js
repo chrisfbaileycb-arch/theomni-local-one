@@ -2,6 +2,40 @@ const { test, expect } = require('./fixtures');
 const { watchPage, expectClean, openApp, goTo, toast, apiLogin, currentAccessCode, expectNoLeakedValues } = require('./helpers');
 
 test.describe('team & approvals', () => {
+  test('memory core card: status, backup download, restore, reset confirm/cancel', async ({ page }) => {
+    const problems = watchPage(page);
+    await openApp(page);
+    await goTo(page, 'team');
+    const card = page.getByTestId('data-core-card');
+    await expect(card).toBeVisible();
+    await expect(page.getByTestId('data-core-status')).toContainText('collections');
+    const [download] = await Promise.all([page.waitForEvent('download'), page.getByTestId('data-core-backup-btn').click()]);
+    expect(download.suggestedFilename()).toMatch(/^omnilocal-backup-.*\.json$/);
+    const backup = await page.request.get('/api/admin/backup').then((r) => r.json());
+    expect(backup.collections.users).toBeTruthy();
+
+    // Restore the file we just downloaded (with a marker) and see it applied.
+    backup.collections.brand_profile.city = 'Restoreville';
+    await page.getByTestId('data-core-restore-btn').locator('input[type=file]').setInputFiles({ name: 'backup.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(backup)) });
+    await expect(toast(page, 'Backup restored')).toBeVisible();
+    await page.waitForURL('/'); // the card reloads the app so every panel shows restored data
+    await expect(page.locator('aside').filter({ hasText: 'Active Business' })).toContainText('Restoreville', { timeout: 20000 });
+    await goTo(page, 'team');
+    backup.collections.brand_profile.city = 'Springfield';
+    await page.getByTestId('data-core-restore-btn').locator('input[type=file]').setInputFiles({ name: 'backup.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(backup)) });
+    await expect(toast(page, 'Backup restored')).toBeVisible();
+    await expect(page.locator('aside').filter({ hasText: 'Active Business' })).toContainText('Springfield', { timeout: 20000 });
+    await goTo(page, 'team');
+    await page.getByTestId('data-core-restore-btn').locator('input[type=file]').setInputFiles({ name: 'junk.json', mimeType: 'application/json', buffer: Buffer.from('{"nope":1}') });
+    await expect(toast(page, /not an OmniLocal backup|collections/)).toBeVisible();
+
+    await page.getByTestId('data-core-reset-btn').click();
+    await expect(page.getByTestId('data-core-confirm-reset-btn')).toBeVisible();
+    await page.getByTestId('data-core-cancel-reset-btn').click();
+    await expect(page.getByTestId('data-core-reset-btn')).toBeVisible();
+    await expectClean(problems, { allowBad: ['/api/admin/restore -> 400'] });
+  });
+
   test('access code card: value, copy, rotate confirm/cancel', async ({ newContext }) => {
     const ctx = await newContext({ permissions: ['clipboard-read', 'clipboard-write'] });
     const page = await ctx.newPage();
