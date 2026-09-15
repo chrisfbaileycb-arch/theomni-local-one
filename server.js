@@ -11,7 +11,7 @@ const multer = require('multer');
 const { Store } = require('./lib/store');
 
 const app = express();
-const PORT = Number(process.env.PORT) || 3000;
+const PORT = 3000;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.7-flash";
 // Durable data directory (SQLite store + uploaded media). Mount this as a volume in production.
 const DATA_DIR = process.env.OMNILOCAL_DATA_DIR || path.join(__dirname, 'data');
