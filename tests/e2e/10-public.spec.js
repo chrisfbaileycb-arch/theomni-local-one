@@ -66,6 +66,7 @@ test.describe('pricing & payments', () => {
     await page.goto('/payment/cancel');
     await page.getByTestId('back-to-pricing-link').click();
     await expect(page.getByTestId('pricing-page')).toBeVisible();
-    await expectClean(problems);
+    // Fail-closed auth: the pricing page is guest-accessible, so /api/auth/me 401s are expected.
+    await expectClean(problems, { allowBad: ['GET /api/auth/me -> 401'] });
   });
 });

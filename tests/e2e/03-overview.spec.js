@@ -1,5 +1,5 @@
 const { test, expect } = require('./fixtures');
-const { watchPage, expectClean, openApp, goTo, toast, expectNoLeakedValues } = require('./helpers');
+const { watchPage, expectClean, openApp, goTo, toast, expectNoLeakedValues, apiLogin, MASTER_PASSWORD } = require('./helpers');
 
 test.describe('command center (overview) + weekly win report', () => {
   test('hero, metrics and shortcut buttons navigate', async ({ page }) => {
@@ -31,6 +31,8 @@ test.describe('command center (overview) + weekly win report', () => {
 
   test('mobile navigation strip switches sections', async ({ newContext }) => {
     const ctx = await newContext({ viewport: { width: 420, height: 860 } });
+    // Fail-closed: sign the custom-viewport context in before the shell renders.
+    await apiLogin(ctx, 'owner@ironandneedle.com', MASTER_PASSWORD);
     const page = await ctx.newPage();
     await page.goto('/');
     await expect(page.getByTestId('mnav-overview')).toBeVisible();

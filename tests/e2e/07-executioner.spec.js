@@ -62,21 +62,21 @@ test.describe('content executioner (ad engine)', () => {
     await expect(page.getByTestId('plan-strategy-A')).toBeVisible();
     await expect(page.getByTestId('excluded-tiktok')).toBeVisible();
 
+    // OAuth is not implemented in this build: connect buttons say so and no
+    // platform can be marked connected, so gated channels stay excluded.
     await page.getByTestId('connect-tiktok').click();
-    await expect(toast(page, 'TikTok Business authorized')).toBeVisible();
-    await expect(page.getByTestId('disconnect-tiktok')).toBeVisible();
+    await expect(toast(page, "TikTok Business can't be connected yet")).toBeVisible();
+    await expect(page.getByTestId('connect-tiktok')).toBeVisible();
+    await expect(page.getByTestId('disconnect-tiktok')).toHaveCount(0);
     await page.reload();
     await goTo(page, 'executioner');
-    await expect(page.getByTestId('excluded-tiktok')).toHaveCount(0);
-    await page.getByTestId('disconnect-facebook').click();
-    await expect(page.getByTestId('connect-facebook')).toBeVisible();
+    await expect(page.getByTestId('excluded-tiktok')).toBeVisible();
+
+    await page.getByTestId('connect-facebook').click();
+    await expect(toast(page, "Facebook Page can't be connected yet")).toBeVisible();
     await page.reload();
     await goTo(page, 'executioner');
     await expect(page.getByTestId('excluded-facebook')).toBeVisible();
-    await page.getByTestId('connect-facebook').click();
-    await expect(page.getByTestId('disconnect-facebook')).toBeVisible();
-    await page.getByTestId('disconnect-tiktok').click();
-    await expect(page.getByTestId('connect-tiktok')).toBeVisible();
 
     await page.getByTestId('coach-how-btn-A').click();
     await expect(toast(page, 'Build template ready')).toBeVisible();

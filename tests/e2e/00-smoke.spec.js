@@ -26,7 +26,8 @@ test.describe('smoke: public routes', () => {
       await expect(page.locator('#root')).not.toBeEmpty();
       await expect(page.getByTestId('error-boundary')).toHaveCount(0);
       await expectNoLeakedValues(page, page.locator('#root'));
-      await expectClean(problems);
+      // Fail-closed auth: guests hitting public routes are expected to get 401 from /api/auth/me.
+      await expectClean(problems, { allowBad: ['GET /api/auth/me -> 401'] });
     });
   }
 });
