@@ -32,6 +32,6 @@ module.exports = defineConfig({
     url: `${BASE_URL}/api`,
     reuseExistingServer: true,
     timeout: 120_000,
-    env: { OMNILOCAL_DATA_DIR: DATA_DIR, PORT: String(PORT) },
+    env: { OMNILOCAL_DATA_DIR: DATA_DIR, PORT: String(PORT), MASTER_PASSWORD: "test-omnilocal-master" },
   },
 });

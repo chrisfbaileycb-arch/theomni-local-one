@@ -317,7 +317,7 @@ export default function ContentDirector() {
           <div className="mt-5 grid grid-cols-1 md:grid-cols-[220px_1fr] gap-4" data-testid="uploaded-analysis">
             <video src={uploadedVideo} controls className="rounded-lg w-full" style={{ maxHeight: 320, background: "#000" }} data-testid="uploaded-video" />
             <div className="p-4 rounded-lg" style={{ background: "var(--surface-alt)" }}>
-              <Overline>Transcript (Whisper)</Overline>
+              <Overline>Transcript</Overline>
               <p className="text-sm mt-1 italic" style={{ color: "var(--text)" }} data-testid="critic-transcript">
                 {transcriptResult ? `“${transcriptResult}”` : "No speech detected in this clip."}
               </p>

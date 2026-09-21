@@ -1,7 +1,7 @@
 // Shared helpers for the OmniLocal e2e suite.
 const { expect } = require('@playwright/test');
 
-const MASTER_PASSWORD = process.env.MASTER_PASSWORD || 'omnilocal';
+const MASTER_PASSWORD = "test-omnilocal-master";
 
 /**
  * Collect console errors, uncaught page errors and failed / 4xx+ API responses
@@ -37,6 +37,8 @@ async function expectClean(problems, { allowBad = [] } = {}) {
 }
 
 async function openApp(page) {
+  // The app is fail-closed: sign the context in before loading the shell.
+  await apiLogin(page.context(), 'owner@ironandneedle.com', MASTER_PASSWORD);
   await page.goto('/');
   await expect(page.getByTestId('nav-overview')).toBeVisible();
 }

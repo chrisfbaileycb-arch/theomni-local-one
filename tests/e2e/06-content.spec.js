@@ -38,6 +38,9 @@ test.describe('content director', () => {
 
     await page.getByTestId('critic-file-input').setInputFiles(fakeVideo('e2e-clip.mp4', 1400));
     await expect(page.getByTestId('critic-report')).toContainText('e2e-clip.mp4', { timeout: 30000 });
+    // No Gemini key in tests: the fallback must say so, never invent grades.
+    await expect(page.getByTestId('critic-simulated')).toBeVisible();
+    await expect(page.getByTestId('critic-report')).toContainText('NOT_RATED');
     await expect(page.getByTestId('uploaded-analysis')).toBeVisible();
     await expect(page.getByTestId('uploaded-video')).toHaveAttribute('src', /\/api\/content\/critic\/video\/up_/);
     await expect(page.getByTestId('critic-transcript')).not.toBeEmpty();

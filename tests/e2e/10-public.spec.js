@@ -1,9 +1,11 @@
 const { test, expect } = require('./fixtures');
-const { watchPage, expectClean, toast } = require('./helpers');
+const { watchPage, expectClean, toast, apiLogin, MASTER_PASSWORD } = require('./helpers');
 
 test.describe('public scan-to-play page', () => {
   test('a guest signs up, spins, wins a code, and cannot play twice in a week', async ({ newContext }) => {
     const ctx = await newContext({ permissions: ['clipboard-read', 'clipboard-write'] });
+    // Game settings are owner-only: sign the context in for setup, the guest spin itself stays public.
+    await apiLogin(ctx, 'owner@ironandneedle.com', MASTER_PASSWORD);
     const page = await ctx.newPage();
     const problems = watchPage(page);
     const email = `guest-${Date.now()}@example.com`;

@@ -28,7 +28,7 @@ async function waitForServer(proc) {
 function startServer(dataDir) {
   const proc = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), OMNILOCAL_DATA_DIR: dataDir, MASTER_PASSWORD: '' },
+    env: { ...process.env, PORT: String(PORT), OMNILOCAL_DATA_DIR: dataDir, MASTER_PASSWORD },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   proc.stdout.on('data', () => {});

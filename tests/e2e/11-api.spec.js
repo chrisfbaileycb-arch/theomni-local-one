@@ -274,15 +274,21 @@ test.describe('API contract', () => {
 
     const conn = await j(await request.get('/api/connections'));
     expect(conn.platforms.length).toBe(5);
+    expect(conn.connectedCount).toBe(0);
     await j(await request.get('/api/connections/oauth/youtube/start'));
-    const cb = await j(await request.post('/api/connections/oauth/callback', { data: { platform: 'youtube', code: 'demo' } }));
-    expect(cb.platforms.find((p) => p.id === 'youtube').connected).toBe(true);
+    // OAuth is not implemented: the callback must refuse, not flip a flag.
+    const cbRes = await request.post('/api/connections/oauth/callback', { data: { platform: 'youtube', code: 'demo' } });
+    expect(cbRes.status()).toBe(501);
+    expect((await cbRes.json()).connected).toBe(false);
+    expect((await j(await request.get('/api/connections'))).platforms.find((p) => p.id === 'youtube').connected).toBe(false);
     const off = await j(await request.put('/api/connections', { data: { platform: 'youtube', connected: false } }));
     expect(off.platforms.find((p) => p.id === 'youtube').connected).toBe(false);
     await j(await request.get('/api/google-business/start'));
-    await j(await request.get('/api/google-business/status'));
-    await j(await request.get('/api/google-business/locations'));
-    await j(await request.put('/api/google-business/location', { data: { name: 'x', title: 'y' } }));
+    const gbpStatus = await j(await request.get('/api/google-business/status'));
+    expect(gbpStatus.connected).toBe(false);
+    expect(gbpStatus.status).toBe("not_configured");
+    expect((await j(await request.get('/api/google-business/locations'))).locations).toEqual([]);
+    expect((await request.put('/api/google-business/location', { data: { name: 'x', title: 'y' } })).status()).toBe(501);
     await j(await request.delete('/api/google-business/connection'));
 
     const tpls = await j(await request.get('/api/print-studio/templates'));
