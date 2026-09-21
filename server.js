@@ -743,11 +743,13 @@ const restoredCollections = store.loadInto(state, sessions);
 // existed here in earlier builds; purge it from any restored (on-disk) session state too.
 sessions.delete("tok_owner_default");
 
-// Master password (owner sign-in without Google). MASTER_PASSWORD, when set, is authoritative;
-// otherwise the password last saved from Team & Approvals is kept across restarts.
-// There is NO default password: a fresh install generates a strong random one, prints it
-// once to the server log, and persists its hash. Set MASTER_PASSWORD in the environment
-// for unattended deployments.
+// Master password (owner sign-in without Google). The hash saved via
+// Team & Approvals is authoritative and survives restarts; MASTER_PASSWORD,
+// when set, only initializes a fresh store with no saved password yet, and a
+// factory reset returns to it. There is NO default password: a fresh install
+// generates a strong random one, prints it once to the server log, and
+// persists its hash. Set MASTER_PASSWORD in the environment for unattended
+// deployments.
 let generatedMasterPassword = null;
 if (!process.env.MASTER_PASSWORD && !state.master_password_hash) {
   generatedMasterPassword = crypto.randomBytes(24).toString("hex");
@@ -757,11 +759,23 @@ if (!process.env.MASTER_PASSWORD && !state.master_password_hash) {
   console.log("[OmniLocal] Sign in with it, then change it in Team & Approvals. For unattended deploys, set the MASTER_PASSWORD env var instead.");
 }
 function bootMasterPasswordHash() {
+  // A password saved by the owner (change-password) is authoritative and must
+  // survive restarts even when MASTER_PASSWORD is set: the env value only
+  // initializes a fresh store that has no persisted hash yet.
+  if (state.master_password_hash) return state.master_password_hash;
   if (process.env.MASTER_PASSWORD) return bcrypt.hashSync(process.env.MASTER_PASSWORD, 10);
   if (generatedMasterPassword) return bcrypt.hashSync(generatedMasterPassword, 10);
-  return state.master_password_hash || null; // keep the persisted hash; never a placeholder
+  return null; // no persisted hash; never a placeholder
 }
-// Apply at boot: MASTER_PASSWORD env wins, else the generated password, else the saved hash.
+// Factory reset returns to the configured value: MASTER_PASSWORD env wins,
+// else the fresh-boot generated password, else the currently persisted hash.
+function resetMasterPasswordHash() {
+  if (process.env.MASTER_PASSWORD) return bcrypt.hashSync(process.env.MASTER_PASSWORD, 10);
+  if (generatedMasterPassword) return bcrypt.hashSync(generatedMasterPassword, 10);
+  return state.master_password_hash || null;
+}
+// Apply at boot: the saved hash wins when one exists, else the MASTER_PASSWORD
+// env initializes a fresh store, else the generated password, else null.
 const _bootHash = bootMasterPasswordHash();
 if (_bootHash) state.master_password_hash = _bootHash;
 const SIGNED_OUT_TOKEN = "signed_out";
@@ -883,7 +897,7 @@ app.post('/api/admin/reset', (req, res) => {
   if (!requireOwner(req, res)) return;
   if (req.body?.confirm !== "RESET") return res.status(400).json({ detail: 'Send { "confirm": "RESET" } to wipe live data and reload the demo seed.' });
   store.reset(SEED_STATE);
-  const resetHash = bootMasterPasswordHash();
+  const resetHash = resetMasterPasswordHash();
   if (resetHash) state.master_password_hash = resetHash; // never fall back to a placeholder
   if (!Array.isArray(state.calendar_posts)) seedCalendar();
   store.flush();
