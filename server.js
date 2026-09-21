@@ -761,6 +761,9 @@ function bootMasterPasswordHash() {
   if (generatedMasterPassword) return bcrypt.hashSync(generatedMasterPassword, 10);
   return state.master_password_hash || null; // keep the persisted hash; never a placeholder
 }
+// Apply at boot: MASTER_PASSWORD env wins, else the generated password, else the saved hash.
+const _bootHash = bootMasterPasswordHash();
+if (_bootHash) state.master_password_hash = _bootHash;
 const SIGNED_OUT_TOKEN = "signed_out";
 const MAX_MEMBERS = 3;
 
@@ -1713,20 +1716,33 @@ Return ONLY valid JSON matching this schema:
     }
   }
 
+  // AI unavailable: return an explicit "not analyzed" result. Never invent grades
+  // or measurements for a clip that was not actually assessed.
+  const notRated = { grade: "NOT_RATED", critique: "Not assessed — the AI video critic is unavailable (no GEMINI_API_KEY configured).", recommendation: "Configure GEMINI_API_KEY to get a real AI assessment." };
   const report = {
     filename: filename || (up && up.filename) || "video-upload.mov",
-    hook: { grade: "STRONG", critique: "Starts right on the hero subject. Hook captured within 1.2s.", recommendation: "Great fast action start." },
-    audio: { grade: "STRONG", critique: "Vocal energy is confident and clear with low background noise.", recommendation: "Maintain this volume balance." },
-    framing: { grade: "STRONG", critique: "Front lighting and stable 9:16 vertical composition.", recommendation: "Ready for social deployment." },
-    overall: "STRONG",
-    measured
+    simulated: true,
+    hook: notRated,
+    audio: notRated,
+    framing: notRated,
+    overall: "NOT_RATED",
+    measured: {
+      bytes: (up && up.size) || null,
+      durationSec: null,
+      wordsPerMinute: null,
+      framesAnalyzed: null,
+      hasAudio: null,
+      note: "No measurements were taken. Duration, pacing, and audio presence require the AI critic.",
+    },
   };
   res.json({
+    simulated: true,
     report,
-    transcript: cleanTranscript || "Transcript unavailable in local mode — add GEMINI_API_KEY for transcription. Grading used clip metadata.",
+    transcript: "Transcript unavailable — the AI video critic is unavailable (no GEMINI_API_KEY configured). This clip was not analyzed.",
     videoUrl,
-    planCheck,
-    engine: "local-fallback"
+    planCheck: null,
+    engine: "local-fallback (simulated)",
+    message: "Simulated result: the AI video critic is not configured, so this clip was not analyzed. No grades or measurements were generated.",
   });
 });
 
@@ -1842,11 +1858,14 @@ app.post('/api/content/calendar/reset', (req, res) => {
 });
 
 app.get('/api/content/distribution', (req, res) => {
+  const conn = (id) => isPlatformConnected(id);
   res.json({
-    gbp: { connected: true, lastPost: "2 days ago" },
-    facebook: { connected: true, lastPost: "Yesterday" },
-    instagram: { connected: true, lastPost: "3 days ago" },
-    mailchimp: { connected: false }
+    gbp: { connected: conn("google"), lastPost: null },
+    facebook: { connected: conn("facebook"), lastPost: null },
+    instagram: { connected: conn("instagram"), lastPost: null },
+    mailchimp: { connected: false },
+    demo: true,
+    note: "No publishing pathway is connected in this build. Connect a platform before publishing."
   });
 });
 
@@ -3158,13 +3177,19 @@ if (!state.connections) {
   state.connections = {
     provider: "Ayrshare",
     platforms: [
-      { id: "facebook", label: "Facebook Page", connected: true, authMode: "OAuth 2.0 (Direct)" },
-      { id: "instagram", label: "Instagram Professional", connected: true, authMode: "Meta Graph API" },
-      { id: "google", label: "Google Business Profile", connected: true, authMode: "Google My Business API" },
+      { id: "facebook", label: "Facebook Page", connected: false, authMode: "OAuth 2.0 (Direct)" },
+      { id: "instagram", label: "Instagram Professional", connected: false, authMode: "Meta Graph API" },
+      { id: "google", label: "Google Business Profile", connected: false, authMode: "Google My Business API" },
       { id: "tiktok", label: "TikTok Business", connected: false, authMode: "TikTok Marketing API" },
       { id: "youtube", label: "YouTube Shorts", connected: false, authMode: "Google OAuth" }
     ]
   };
+}
+// One-time correction: earlier builds seeded facebook/instagram/google as connected
+// with fictional account names ("Nonna's Corner Deli"). No real OAuth flow exists in
+// this build, so reset any platform that never completed a genuine OAuth exchange.
+for (const p of state.connections?.platforms || []) {
+  if (p.id !== "demo-pos" && !p.oauthCompletedAt) p.connected = false;
 }
 
 app.get('/api/connections', (req, res) => {
@@ -3174,11 +3199,15 @@ app.get('/api/connections', (req, res) => {
     provider: state.connections?.provider || "Ayrshare",
     connectedCount,
     platforms,
-    gbp: { connected: true, locationName: "Nonna's Corner Deli - Main St" },
-    meta: { connected: true, account: "Nonna's Deli Page" },
-    instagram: { connected: true, handle: "@nonnascorner" },
+    // Demo/simulation status: the OAuth flows behind these platforms are not wired
+    // up in this build, so no live account is connected. Names below are null until
+    // a genuine connection is established.
+    demo: connectedCount === 0,
+    gbp: { connected: false, locationName: null },
+    meta: { connected: false, account: null },
+    instagram: { connected: false, handle: null },
     mailchimp: { connected: false },
-    pos: { connected: true, provider: "Square POS" }
+    pos: { connected: false, provider: null }
   });
 });
 
@@ -3203,22 +3232,15 @@ app.get('/api/connections/oauth/:platform/start', (req, res) => {
     provider: state.connections?.provider || "Ayrshare",
     live: false,
     authorization_url: null,
-    message: `Connected ${platform} via Unified API provider.`
+    message: `OAuth for ${platform} is not wired up in this build. No connection was created.`
   });
 });
 
 app.post('/api/connections/oauth/callback', (req, res) => {
-  const { platform } = req.body || {};
-  if (state.connections?.platforms) {
-    const p = state.connections.platforms.find(x => x.id === platform);
-    if (p) p.connected = true;
-  }
-  const platforms = state.connections?.platforms || [];
-  res.json({
-    provider: state.connections?.provider || "Ayrshare",
-    connectedCount: platforms.filter(p => p.connected).length,
-    platforms,
-    status: "ok"
+  // The OAuth exchange is not implemented: refuse to mark anything connected.
+  return res.status(501).json({
+    detail: "OAuth is not implemented in this build. No platform was connected.",
+    connected: false
   });
 });
 
@@ -3226,21 +3248,21 @@ app.get('/api/connections/pathways', (req, res) => {
   res.json({ pathways: ["gbp", "facebook", "instagram", "sms"] });
 });
 
-// Google Business Profile integration
+// Google Business Profile integration (demo: no live Google connection exists in this build)
 app.get('/api/google-business/start', (req, res) => {
-  res.json({ authorization_url: null, message: "Google publishing is in demo mode" });
+  res.json({ authorization_url: null, message: "Google publishing is in demo mode — no live Google connection exists." });
 });
 
 app.get('/api/google-business/status', (req, res) => {
-  res.json({ connected: true, location: { name: "locations/123", title: "Nonna's Corner Deli" } });
+  res.json({ connected: false, status: "not_configured", demo: true, location: null });
 });
 
 app.get('/api/google-business/locations', (req, res) => {
-  res.json({ locations: [{ name: "locations/123", title: "Nonna's Corner Deli (Main St)" }] });
+  res.json({ locations: [], demo: true, note: "Google Business Profile is not connected. No live locations exist in this build." });
 });
 
 app.put('/api/google-business/location', (req, res) => {
-  res.json({ status: "ok" });
+  res.status(501).json({ detail: "Google Business Profile is not connected. Location selection is unavailable in demo mode." });
 });
 
 app.delete('/api/google-business/connection', (req, res) => {
@@ -4132,10 +4154,39 @@ app.get('/api/copilot/tools', (req, res) => {
   });
 });
 
+// Summarizes marketing performance from stored/imported data only. Never invents
+// figures: metrics the store cannot support are reported as unavailable, and all
+// numbers carry a demo label until real reports are imported.
+function copilotAnalyticsSummary() {
+  const sources = state.attribution_sources || {};
+  const sum = (rows, key) => (rows || []).reduce((s, r) => s + (Number(r[key]) || 0), 0);
+  const spend = sum(sources.meta, "spend") + sum(sources.tiktok, "spend")
+    + (state.ad_spend_logs || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  const attributedRevenue = sum(sources.pos, "netAttributedRevenue");
+  const walkIns = (state.spots || []).reduce((s, x) => s + (Number(x.redemptions) || 0), 0);
+  const roas = spend > 0 && attributedRevenue > 0 ? attributedRevenue / spend : null;
+  return {
+    spend: Math.round(spend * 100) / 100,
+    attributedRevenue: Math.round(attributedRevenue * 100) / 100,
+    walkIns,
+    roas: roas === null ? null : Math.round(roas * 100) / 100,
+    dataSource: "demo",
+    note: "Sample seed data. Import real Meta/TikTok/GBP/POS reports in the Attribution Hub for live figures."
+  };
+}
+
+function copilotAnalyticsLine(a) {
+  const roasText = a.roas === null
+    ? "ROAS unavailable — import POS revenue and ad spend reports to compute it"
+    : `blended ROAS ${a.roas}x`;
+  return `Cross-channel analytics (sample data): ${roasText} on $${a.spend.toFixed(2)} tracked ad spend, ${a.walkIns} QR walk-ins recorded, $${a.attributedRevenue.toFixed(2)} attributed revenue. ${a.note}`;
+}
+
 app.post('/api/copilot/chat', async (req, res) => {
   const { message, history, activeView } = req.body || {};
   const query = (message || "").trim();
   const bp = state.brand_profile || {};
+  const analytics = copilotAnalyticsSummary();
   const kn = state.longitudinal_knowledge || {};
 
   if (!query) {
@@ -4148,7 +4199,9 @@ app.post('/api/copilot/chat', async (req, res) => {
     try {
       const systemInstruction = `You are the Co-Captain AI operating system for OmniLocal #1 Revenue Engine, managing marketing, physical QR generation, attribution reconciliation, and margin guardrails for ${bp.name || "Local Business"} (${bp.industryLabel || "Independent Business"}).
 Current active view: ${activeView || "overview"}.
-Current Blended ROAS: 6.84x, Weekly Spend: $299.00, Maturity Level: ${kn.maturityLevel || "Month 3: Pattern Matched"}.
+Current analytics (from stored data, sample/demo seed until real reports are imported): ${copilotAnalyticsLine(analytics)}
+Maturity Level: ${kn.maturityLevel || "Month 3: Pattern Matched"}.
+Never present sample or demo figures as live business results; always label them as sample data.
 You have access to tools that directly control the application. Always invoke the appropriate tool declaration whenever the user asks to navigate, generate/schedule campaigns, update contacts, pull analytics, generate print assets, lock margins, stage ad spend for human approval, redeem vouchers, export codes, or switch verticals. Respond concisely and professionally.`;
 
       const priorTurns = Array.isArray(history)
@@ -4227,7 +4280,7 @@ You have access to tools that directly control the application. Always invoke th
         notes: "Open Tue-Sat 11am-8pm. VIP bookings prioritized."
       }
     };
-    replyText = `Updated directory and local map contact card for ${bp.name}. Google Business Profile synchronization updated.`;
+    replyText = `Updated the local directory contact card for ${bp.name}. Note: Google Business Profile is not connected in this build, so nothing was synced to Google.`;
   } else if (q.includes("campaign") || q.includes("schedule") || q.includes("sprint") || q.includes("arcade") || q.includes("reels")) {
     const track = q.includes("video") || q.includes("reel") ? "track_a" : q.includes("drip") || q.includes("email") ? "track_c" : q.includes("map") || q.includes("search") ? "track_d" : "track_b";
     matchedTool = {
@@ -4251,7 +4304,7 @@ You have access to tools that directly control the application. Always invoke th
         focusMetric: "blended_roas"
       }
     };
-    replyText = `Retrieved cross-channel analytics: Blended ROAS is 6.84x on $299 weekly ad spend, delivering 129 verified walk-ins and $740 direct-mail replacement value.`;
+    replyText = copilotAnalyticsLine(analytics);
   } else if (q.includes("margin") || q.includes("floor") || q.includes("discount cap") || q.includes("discount ceiling")) {
     matchedTool = {
       name: "tune_margin_floor",
@@ -4338,7 +4391,7 @@ app.post('/api/brand/contacts/update', (req, res) => {
 
   res.json({
     status: "ok",
-    message: `Updated directory & Google Business Profile contacts for ${bp.name}.`,
+    message: `Updated local directory contacts for ${bp.name}. Google Business Profile is not connected, so nothing was synced to Google.`,
     contacts: {
       name: bp.name,
       phone: bp.phone,
