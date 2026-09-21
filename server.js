@@ -11,14 +11,18 @@ const multer = require('multer');
 const { Store } = require('./lib/store');
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.7-flash";
 // Durable data directory (SQLite store + uploaded media). Mount this as a volume in production.
 const DATA_DIR = process.env.OMNILOCAL_DATA_DIR || path.join(__dirname, 'data');
 const APP_VERSION = require('./package.json').version;
 const BOOT_AT = Date.now();
 
-app.use(cors({ origin: true, credentials: true }));
+// CORS: same-origin by default. If the frontend is hosted on a different origin,
+// set ALLOWED_ORIGINS to a comma-separated allowlist (e.g. "https://app.example.com").
+// Reflecting arbitrary origins with credentials enabled is an auth bypass vector.
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "").split(",").map(s => s.trim()).filter(Boolean);
+app.use(cors({ origin: ALLOWED_ORIGINS.length ? ALLOWED_ORIGINS : false, credentials: true }));
 app.use(cookieParser());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
@@ -735,12 +739,28 @@ state.campaign_tracks = [
 const SEED_STATE = JSON.parse(JSON.stringify(state));
 const store = new Store({ dataDir: DATA_DIR });
 const restoredCollections = store.loadInto(state, sessions);
-sessions.set("tok_owner_default", { userId: defaultOwner.user_id, expires: Date.now() + 30 * 86400000 });
+// Security: never seed an owner session. A hardcoded session token ("tok_owner_default")
+// existed here in earlier builds; purge it from any restored (on-disk) session state too.
+sessions.delete("tok_owner_default");
 
 // Master password (owner sign-in without Google). MASTER_PASSWORD, when set, is authoritative;
 // otherwise the password last saved from Team & Approvals is kept across restarts.
-const BOOT_MASTER_HASH = bcrypt.hashSync(process.env.MASTER_PASSWORD || "omnilocal", 8);
-if (process.env.MASTER_PASSWORD || !state.master_password_hash) state.master_password_hash = BOOT_MASTER_HASH;
+// There is NO default password: a fresh install generates a strong random one, prints it
+// once to the server log, and persists its hash. Set MASTER_PASSWORD in the environment
+// for unattended deployments.
+let generatedMasterPassword = null;
+if (!process.env.MASTER_PASSWORD && !state.master_password_hash) {
+  generatedMasterPassword = crypto.randomBytes(24).toString("hex");
+  state.master_password_hash = bcrypt.hashSync(generatedMasterPassword, 10);
+  console.log("[OmniLocal] First boot: generated an owner master password (no default password is used).");
+  console.log(`[OmniLocal] Master password: ${generatedMasterPassword}`);
+  console.log("[OmniLocal] Sign in with it, then change it in Team & Approvals. For unattended deploys, set the MASTER_PASSWORD env var instead.");
+}
+function bootMasterPasswordHash() {
+  if (process.env.MASTER_PASSWORD) return bcrypt.hashSync(process.env.MASTER_PASSWORD, 10);
+  if (generatedMasterPassword) return bcrypt.hashSync(generatedMasterPassword, 10);
+  return state.master_password_hash || null; // keep the persisted hash; never a placeholder
+}
 const SIGNED_OUT_TOKEN = "signed_out";
 const MAX_MEMBERS = 3;
 
@@ -748,12 +768,12 @@ function sessionTokenFromReq(req) {
   return req.cookies?.session_token || req.headers?.authorization?.replace(/^Bearer\s+/, '') || "";
 }
 
-// Resolves the signed-in user. Returns null only when the visitor explicitly signed out;
-// otherwise falls back to the seeded owner so preview environments load immediately.
+// Resolves the signed-in user. Returns null when there is no valid session —
+// credential-less requests are NOT treated as the owner (fail closed).
 function getUserFromReq(req) {
   const token = sessionTokenFromReq(req);
   if (token === SIGNED_OUT_TOKEN) return null;
-  if (!token) return defaultOwner; // no cookie at all: preview mode
+  if (!token) return null; // no session token: not authenticated
   const sess = sessions.get(token);
   if (sess && sess.expires > Date.now()) {
     return state.users.find(u => u.user_id === sess.userId) || null;
@@ -860,7 +880,8 @@ app.post('/api/admin/reset', (req, res) => {
   if (!requireOwner(req, res)) return;
   if (req.body?.confirm !== "RESET") return res.status(400).json({ detail: 'Send { "confirm": "RESET" } to wipe live data and reload the demo seed.' });
   store.reset(SEED_STATE);
-  state.master_password_hash = BOOT_MASTER_HASH;
+  const resetHash = bootMasterPasswordHash();
+  if (resetHash) state.master_password_hash = resetHash; // never fall back to a placeholder
   if (!Array.isArray(state.calendar_posts)) seedCalendar();
   store.flush();
   res.json({ status: "ok", message: "Memory core reset to the demo seed." });
@@ -878,7 +899,38 @@ app.get('/api/auth/google/start', (req, res) => {
   res.redirect('/?auth_error=google_not_configured');
 });
 
+// Brute-force guard for the login endpoint: >5 failed attempts from one IP inside
+// 10 minutes returns 429. Successful logins clear the counter.
+const loginAttempts = new Map(); // ip -> { count, firstAt }
+const LOGIN_WINDOW_MS = 10 * 60 * 1000;
+const LOGIN_MAX_FAILS = 5;
+function loginClientIp(req) {
+  return req.ip || req.socket?.remoteAddress || "unknown";
+}
+function loginRateLimited(req, res) {
+  const now = Date.now();
+  const rec = loginAttempts.get(loginClientIp(req));
+  if (rec && now - rec.firstAt < LOGIN_WINDOW_MS && rec.count >= LOGIN_MAX_FAILS) {
+    const retrySec = Math.ceil((LOGIN_WINDOW_MS - (now - rec.firstAt)) / 1000);
+    res.setHeader("Retry-After", String(retrySec));
+    res.status(429).json({ detail: "Too many login attempts. Try again later." });
+    return true;
+  }
+  return false;
+}
+function recordLoginFailure(req) {
+  const ip = loginClientIp(req);
+  const now = Date.now();
+  const rec = loginAttempts.get(ip);
+  if (!rec || now - rec.firstAt >= LOGIN_WINDOW_MS) loginAttempts.set(ip, { count: 1, firstAt: now });
+  else rec.count += 1;
+}
+function clearLoginFailures(req) {
+  loginAttempts.delete(loginClientIp(req));
+}
+
 app.post('/api/auth/login', (req, res) => {
+  if (loginRateLimited(req, res)) return;
   const { email, password } = req.body || {};
   const cleanEmail = String(email || "").trim().toLowerCase();
   const pwd = String(password || "");
@@ -888,6 +940,7 @@ app.post('/api/auth/login', (req, res) => {
   if (bcrypt.compareSync(pwd, state.master_password_hash)) {
     const owner = state.users.find(u => u.role === 'owner') || defaultOwner;
     const token = issueSession(res, owner);
+    clearLoginFailures(req);
     return res.json({ ...authPayload(owner), sessionToken: token });
   }
 
@@ -916,9 +969,11 @@ app.post('/api/auth/login', (req, res) => {
     user.status = "active";
     user.code_version = state.team_settings.code_version;
     const token = issueSession(res, user);
+    clearLoginFailures(req);
     return res.json({ ...authPayload(user), sessionToken: token });
   }
 
+  recordLoginFailure(req);
   return res.status(401).json({ detail: "Invalid master password or team access code." });
 });
 
@@ -932,14 +987,14 @@ app.post('/api/auth/change-password', (req, res) => {
   if (!newPassword || String(newPassword).length < 8) {
     return res.status(400).json({ detail: "New password must be at least 8 characters." });
   }
-  state.master_password_hash = bcrypt.hashSync(String(newPassword), 8);
+  state.master_password_hash = bcrypt.hashSync(String(newPassword), 10);
   res.json({ status: "ok", message: "Password updated successfully." });
 });
 
 app.post('/api/auth/logout', (req, res) => {
   const token = sessionTokenFromReq(req);
-  if (token && token !== "tok_owner_default") sessions.delete(token);
-  // Marker cookie so the seeded preview session is not silently restored.
+  if (token) sessions.delete(token); // server-side invalidation: the session is dead immediately
+  // Marker cookie so the client stays signed out instead of being treated as a fresh visitor.
   res.cookie('session_token', SIGNED_OUT_TOKEN, { httpOnly: true, sameSite: 'lax', maxAge: 30 * 86400000 });
   res.json({ status: "ok" });
 });
