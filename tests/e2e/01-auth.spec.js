@@ -46,7 +46,7 @@ test.describe('auth: sign out, master password, Google, team seats', () => {
   });
 
   test('a teammate signs in with the access code, gets locked out by a rotation, and unlocks with the new code', async ({ newContext, page }) => {
-    // Owner context (default seeded session) rotates the code later.
+    // Owner context (signed in via openApp) rotates the code later.
     await openApp(page);
     const code = await currentAccessCode(page.context().request);
     expect(code).toMatch(/^TR-[A-Z0-9]{4}-[A-Z0-9]{4}$/);
@@ -55,7 +55,7 @@ test.describe('auth: sign out, master password, Google, team seats', () => {
     const member = await memberCtx.newPage();
     const problems = watchPage(member);
     await member.goto('/');
-    await member.getByTestId('logout-btn').click();
+    // The member context starts signed out (fail-closed); there is no session to log out of.
     await member.getByTestId('login-email-input').fill('teammate@example.com');
     await member.getByTestId('login-password-input').fill(code);
     await member.getByTestId('password-login-btn').click();

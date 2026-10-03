@@ -38,11 +38,16 @@ test.describe('content director', () => {
 
     await page.getByTestId('critic-file-input').setInputFiles(fakeVideo('e2e-clip.mp4', 1400));
     await expect(page.getByTestId('critic-report')).toContainText('e2e-clip.mp4', { timeout: 30000 });
+    // No Gemini key in tests: the fallback must say so, never invent grades.
+    await expect(page.getByTestId('critic-simulated')).toBeVisible();
+    await expect(page.getByTestId('critic-report')).toContainText('NOT_RATED');
     await expect(page.getByTestId('uploaded-analysis')).toBeVisible();
     await expect(page.getByTestId('uploaded-video')).toHaveAttribute('src', /\/api\/content\/critic\/video\/up_/);
     await expect(page.getByTestId('critic-transcript')).not.toBeEmpty();
     await expect(page.getByTestId('critic-measured')).toBeVisible();
-    if (options.length > 1) await expect(page.getByTestId('plan-check-verdict')).toBeVisible();
+    // No AI key in tests: the honest fallback never fabricates a plan-check verdict
+    // for a clip that was not analyzed.
+    await expect(page.getByTestId('plan-check-verdict')).toHaveCount(0);
     const src = await page.getByTestId('uploaded-video').getAttribute('src');
     const media = await page.request.get(src);
     expect(media.status()).toBe(200);
@@ -54,12 +59,11 @@ test.describe('content director', () => {
     const problems = watchPage(page);
     await openContent(page);
     await expect(page.getByTestId('distribution-pathways')).toBeVisible();
+    // OAuth is not implemented, so every pathway seeds disconnected: the honest
+    // outcome is "no authorized pathways", never fabricated published statuses.
     await page.getByTestId('publish-all-btn').click();
-    await expect(toast(page, 'Published to')).toBeVisible();
-    await expect(page.getByTestId('publish-summary')).toContainText('published');
-    await expect(page.getByTestId('publish-status-facebook')).toBeVisible();
-    await expect(page.getByTestId('publish-status-tiktok')).toBeVisible();
-    await expect(page.getByTestId('pathway-tiktok')).toContainText('Skipped');
+    await expect(toast(page, 'No authorized pathways')).toBeVisible();
+    await expect(toast(page, 'Published to')).toHaveCount(0);
     await expectNoLeakedValues(page, page.getByTestId('distribution-pathways'));
     await expectClean(problems);
   });

@@ -25,34 +25,29 @@ export default function Connections() {
     load();
     const q = new URLSearchParams(window.location.search);
     if (q.get("google") === "connected") {
-      toast.success("Google Business Profile connected!", { description: "Pick your publish location below." });
+      // Legacy param: OAuth is not implemented, so no real connection can exist.
+      toast.message("Google Business Profile is in demo mode", { description: "No live Google connection exists in this build." });
       window.history.replaceState({}, "", window.location.pathname);
     }
   }, []);
 
-  // OAuth "Connect" handshake via the Unified API provider (stubbed end-to-end).
+  // OAuth is NOT wired up in this build: the handshake below is disabled and the
+  // server refuses to mark any platform connected. Connect buttons explain this
+  // instead of faking an authorization.
   const connect = async (platform, label) => {
     setBusy(platform);
     try {
       if (platform === "google") {
         const g = await gbpStart();
-        if (g.authorization_url) {
-          window.location.assign(g.authorization_url);
-          return;
-        }
-        toast.message("Google publishing is in demo mode", { description: g.message });
+        toast.message("Google publishing is in demo mode", { description: g.message || "No live Google connection exists in this build." });
+        return;
       }
       const start = await oauthStart(platform);
-      toast.message(`Authorizing ${label}…`, {
-        description: `Redirecting through ${start.provider}${start.live ? "" : " (demo handshake)"}`,
-      });
-      const res = await oauthCallback(platform, "demo_auth_code");
-      setData(res);
-      toast.success(`${label} authorized`, {
-        description: `Token received via ${start.provider} — the Ad Engine can now publish & spend here.`,
+      toast.message(`${label} can't be connected yet`, {
+        description: start.message || "OAuth is not implemented in this build — no connection was created.",
       });
     } catch {
-      toast.error(`Could not authorize ${label}. Try again.`);
+      toast.error(`Could not authorize ${label}.`, { description: "OAuth is not implemented in this build." });
     } finally { setBusy(null); }
   };
 
@@ -67,9 +62,9 @@ export default function Connections() {
 
   if (!data) return <div className="p-10" style={{ color: "var(--text-secondary)" }}>Loading…</div>;
   const platforms = Array.isArray(data.platforms) ? data.platforms : [
-    { id: "facebook", label: "Facebook Page", connected: true, authMode: "OAuth 2.0 (Direct)" },
-    { id: "instagram", label: "Instagram Professional", connected: true, authMode: "Meta Graph API" },
-    { id: "google", label: "Google Business Profile", connected: true, authMode: "Google My Business API" },
+    { id: "facebook", label: "Facebook Page", connected: false, authMode: "OAuth 2.0 (Direct)" },
+    { id: "instagram", label: "Instagram Professional", connected: false, authMode: "Meta Graph API" },
+    { id: "google", label: "Google Business Profile", connected: false, authMode: "Google My Business API" },
     { id: "tiktok", label: "TikTok Business", connected: false, authMode: "TikTok Marketing API" },
     { id: "youtube", label: "YouTube Shorts", connected: false, authMode: "Google OAuth" }
   ];

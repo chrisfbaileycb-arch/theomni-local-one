@@ -4,6 +4,7 @@ import { paymentStatus } from "@/lib/api";
 
 export default function PaymentResult({ kind }) {
   const [state, setState] = useState(kind === "cancel" ? "cancelled" : "checking");
+  const [demo, setDemo] = useState(false);
   const tries = useRef(0);
 
   useEffect(() => {
@@ -14,6 +15,7 @@ export default function PaymentResult({ kind }) {
       tries.current += 1;
       try {
         const d = await paymentStatus(sessionId);
+        if (d.mode === "demo") setDemo(true);
         if (d.payment_status === "paid") { setState("paid"); return; }
         if (["failed", "expired"].includes(d.payment_status)) { setState("error"); return; }
       } catch { /* keep polling */ }
@@ -27,7 +29,11 @@ export default function PaymentResult({ kind }) {
     checking: { icon: <Loader2 size={40} className="animate-spin" style={{ color: "var(--primary)" }} />,
       title: "Confirming your payment…", text: "One moment — we're checking with Stripe.", tid: "payment-checking" },
     paid: { icon: <CheckCircle2 size={44} style={{ color: "var(--accent-green, #27AE60)" }} />,
-      title: "Welcome to OmniLocal #1!", text: "Payment confirmed. Watch your inbox — we'll reach out to get your engine set up.", tid: "payment-success" },
+      title: "Welcome to OmniLocal #1!",
+      text: demo
+        ? "Demo checkout complete — no real payment was processed and no charge was made. Connect a real payment provider before going live."
+        : "Payment confirmed. Watch your inbox — we'll reach out to get your engine set up.",
+      tid: "payment-success" },
     cancelled: { icon: <XCircle size={44} style={{ color: "var(--text-secondary)" }} />,
       title: "Checkout cancelled", text: "No charge was made. Come back whenever you're ready.", tid: "payment-cancel" },
     timeout: { icon: <Loader2 size={40} style={{ color: "var(--primary)" }} />,
@@ -39,6 +45,12 @@ export default function PaymentResult({ kind }) {
   return (
     <div className="min-h-screen flex items-center justify-center px-6" style={{ background: "var(--bone)" }}>
       <div className="card p-10 max-w-md w-full text-center" data-testid={body.tid}>
+        {demo && (
+          <div className="mb-4 text-xs font-bold px-3 py-2 rounded inline-block" data-testid="payment-demo-banner"
+            style={{ background: "#FEF5E7", color: "#B9770E" }}>
+            DEMO CHECKOUT — no real payment was processed
+          </div>
+        )}
         <div className="grid place-items-center">{body.icon}</div>
         <h1 className="serif text-3xl mt-4">{body.title}</h1>
         <p className="text-sm mt-2" style={{ color: "var(--text-secondary)" }}>{body.text}</p>

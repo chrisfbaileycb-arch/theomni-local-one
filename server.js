@@ -11,14 +11,18 @@ const multer = require('multer');
 const { Store } = require('./lib/store');
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.7-flash";
 // Durable data directory (SQLite store + uploaded media). Mount this as a volume in production.
 const DATA_DIR = process.env.OMNILOCAL_DATA_DIR || path.join(__dirname, 'data');
 const APP_VERSION = require('./package.json').version;
 const BOOT_AT = Date.now();
 
-app.use(cors({ origin: true, credentials: true }));
+// CORS: same-origin by default. If the frontend is hosted on a different origin,
+// set ALLOWED_ORIGINS to a comma-separated allowlist (e.g. "https://app.example.com").
+// Reflecting arbitrary origins with credentials enabled is an auth bypass vector.
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "").split(",").map(s => s.trim()).filter(Boolean);
+app.use(cors({ origin: ALLOWED_ORIGINS.length ? ALLOWED_ORIGINS : false, credentials: true }));
 app.use(cookieParser());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
@@ -735,12 +739,45 @@ state.campaign_tracks = [
 const SEED_STATE = JSON.parse(JSON.stringify(state));
 const store = new Store({ dataDir: DATA_DIR });
 const restoredCollections = store.loadInto(state, sessions);
-sessions.set("tok_owner_default", { userId: defaultOwner.user_id, expires: Date.now() + 30 * 86400000 });
+// Security: never seed an owner session. A hardcoded session token ("tok_owner_default")
+// existed here in earlier builds; purge it from any restored (on-disk) session state too.
+sessions.delete("tok_owner_default");
 
-// Master password (owner sign-in without Google). MASTER_PASSWORD, when set, is authoritative;
-// otherwise the password last saved from Team & Approvals is kept across restarts.
-const BOOT_MASTER_HASH = bcrypt.hashSync(process.env.MASTER_PASSWORD || "omnilocal", 8);
-if (process.env.MASTER_PASSWORD || !state.master_password_hash) state.master_password_hash = BOOT_MASTER_HASH;
+// Master password (owner sign-in without Google). The hash saved via
+// Team & Approvals is authoritative and survives restarts; MASTER_PASSWORD,
+// when set, only initializes a fresh store with no saved password yet, and a
+// factory reset returns to it. There is NO default password: a fresh install
+// generates a strong random one, prints it once to the server log, and
+// persists its hash. Set MASTER_PASSWORD in the environment for unattended
+// deployments.
+let generatedMasterPassword = null;
+if (!process.env.MASTER_PASSWORD && !state.master_password_hash) {
+  generatedMasterPassword = crypto.randomBytes(24).toString("hex");
+  state.master_password_hash = bcrypt.hashSync(generatedMasterPassword, 10);
+  console.log("[OmniLocal] First boot: generated an owner master password (no default password is used).");
+  console.log(`[OmniLocal] Master password: ${generatedMasterPassword}`);
+  console.log("[OmniLocal] Sign in with it, then change it in Team & Approvals. For unattended deploys, set the MASTER_PASSWORD env var instead.");
+}
+function bootMasterPasswordHash() {
+  // A password saved by the owner (change-password) is authoritative and must
+  // survive restarts even when MASTER_PASSWORD is set: the env value only
+  // initializes a fresh store that has no persisted hash yet.
+  if (state.master_password_hash) return state.master_password_hash;
+  if (process.env.MASTER_PASSWORD) return bcrypt.hashSync(process.env.MASTER_PASSWORD, 10);
+  if (generatedMasterPassword) return bcrypt.hashSync(generatedMasterPassword, 10);
+  return null; // no persisted hash; never a placeholder
+}
+// Factory reset returns to the configured value: MASTER_PASSWORD env wins,
+// else the fresh-boot generated password, else the currently persisted hash.
+function resetMasterPasswordHash() {
+  if (process.env.MASTER_PASSWORD) return bcrypt.hashSync(process.env.MASTER_PASSWORD, 10);
+  if (generatedMasterPassword) return bcrypt.hashSync(generatedMasterPassword, 10);
+  return state.master_password_hash || null;
+}
+// Apply at boot: the saved hash wins when one exists, else the MASTER_PASSWORD
+// env initializes a fresh store, else the generated password, else null.
+const _bootHash = bootMasterPasswordHash();
+if (_bootHash) state.master_password_hash = _bootHash;
 const SIGNED_OUT_TOKEN = "signed_out";
 const MAX_MEMBERS = 3;
 
@@ -748,12 +785,12 @@ function sessionTokenFromReq(req) {
   return req.cookies?.session_token || req.headers?.authorization?.replace(/^Bearer\s+/, '') || "";
 }
 
-// Resolves the signed-in user. Returns null only when the visitor explicitly signed out;
-// otherwise falls back to the seeded owner so preview environments load immediately.
+// Resolves the signed-in user. Returns null when there is no valid session —
+// credential-less requests are NOT treated as the owner (fail closed).
 function getUserFromReq(req) {
   const token = sessionTokenFromReq(req);
   if (token === SIGNED_OUT_TOKEN) return null;
-  if (!token) return defaultOwner; // no cookie at all: preview mode
+  if (!token) return null; // no session token: not authenticated
   const sess = sessions.get(token);
   if (sess && sess.expires > Date.now()) {
     return state.users.find(u => u.user_id === sess.userId) || null;
@@ -860,7 +897,8 @@ app.post('/api/admin/reset', (req, res) => {
   if (!requireOwner(req, res)) return;
   if (req.body?.confirm !== "RESET") return res.status(400).json({ detail: 'Send { "confirm": "RESET" } to wipe live data and reload the demo seed.' });
   store.reset(SEED_STATE);
-  state.master_password_hash = BOOT_MASTER_HASH;
+  const resetHash = resetMasterPasswordHash();
+  if (resetHash) state.master_password_hash = resetHash; // never fall back to a placeholder
   if (!Array.isArray(state.calendar_posts)) seedCalendar();
   store.flush();
   res.json({ status: "ok", message: "Memory core reset to the demo seed." });
@@ -878,7 +916,38 @@ app.get('/api/auth/google/start', (req, res) => {
   res.redirect('/?auth_error=google_not_configured');
 });
 
+// Brute-force guard for the login endpoint: >5 failed attempts from one IP inside
+// 10 minutes returns 429. Successful logins clear the counter.
+const loginAttempts = new Map(); // ip -> { count, firstAt }
+const LOGIN_WINDOW_MS = 10 * 60 * 1000;
+const LOGIN_MAX_FAILS = 5;
+function loginClientIp(req) {
+  return req.ip || req.socket?.remoteAddress || "unknown";
+}
+function loginRateLimited(req, res) {
+  const now = Date.now();
+  const rec = loginAttempts.get(loginClientIp(req));
+  if (rec && now - rec.firstAt < LOGIN_WINDOW_MS && rec.count >= LOGIN_MAX_FAILS) {
+    const retrySec = Math.ceil((LOGIN_WINDOW_MS - (now - rec.firstAt)) / 1000);
+    res.setHeader("Retry-After", String(retrySec));
+    res.status(429).json({ detail: "Too many login attempts. Try again later." });
+    return true;
+  }
+  return false;
+}
+function recordLoginFailure(req) {
+  const ip = loginClientIp(req);
+  const now = Date.now();
+  const rec = loginAttempts.get(ip);
+  if (!rec || now - rec.firstAt >= LOGIN_WINDOW_MS) loginAttempts.set(ip, { count: 1, firstAt: now });
+  else rec.count += 1;
+}
+function clearLoginFailures(req) {
+  loginAttempts.delete(loginClientIp(req));
+}
+
 app.post('/api/auth/login', (req, res) => {
+  if (loginRateLimited(req, res)) return;
   const { email, password } = req.body || {};
   const cleanEmail = String(email || "").trim().toLowerCase();
   const pwd = String(password || "");
@@ -888,6 +957,7 @@ app.post('/api/auth/login', (req, res) => {
   if (bcrypt.compareSync(pwd, state.master_password_hash)) {
     const owner = state.users.find(u => u.role === 'owner') || defaultOwner;
     const token = issueSession(res, owner);
+    clearLoginFailures(req);
     return res.json({ ...authPayload(owner), sessionToken: token });
   }
 
@@ -916,9 +986,11 @@ app.post('/api/auth/login', (req, res) => {
     user.status = "active";
     user.code_version = state.team_settings.code_version;
     const token = issueSession(res, user);
+    clearLoginFailures(req);
     return res.json({ ...authPayload(user), sessionToken: token });
   }
 
+  recordLoginFailure(req);
   return res.status(401).json({ detail: "Invalid master password or team access code." });
 });
 
@@ -932,14 +1004,14 @@ app.post('/api/auth/change-password', (req, res) => {
   if (!newPassword || String(newPassword).length < 8) {
     return res.status(400).json({ detail: "New password must be at least 8 characters." });
   }
-  state.master_password_hash = bcrypt.hashSync(String(newPassword), 8);
+  state.master_password_hash = bcrypt.hashSync(String(newPassword), 10);
   res.json({ status: "ok", message: "Password updated successfully." });
 });
 
 app.post('/api/auth/logout', (req, res) => {
   const token = sessionTokenFromReq(req);
-  if (token && token !== "tok_owner_default") sessions.delete(token);
-  // Marker cookie so the seeded preview session is not silently restored.
+  if (token) sessions.delete(token); // server-side invalidation: the session is dead immediately
+  // Marker cookie so the client stays signed out instead of being treated as a fresh visitor.
   res.cookie('session_token', SIGNED_OUT_TOKEN, { httpOnly: true, sameSite: 'lax', maxAge: 30 * 86400000 });
   res.json({ status: "ok" });
 });
@@ -1658,20 +1730,33 @@ Return ONLY valid JSON matching this schema:
     }
   }
 
+  // AI unavailable: return an explicit "not analyzed" result. Never invent grades
+  // or measurements for a clip that was not actually assessed.
+  const notRated = { grade: "NOT_RATED", critique: "Not assessed — the AI video critic is unavailable (no GEMINI_API_KEY configured).", recommendation: "Configure GEMINI_API_KEY to get a real AI assessment." };
   const report = {
     filename: filename || (up && up.filename) || "video-upload.mov",
-    hook: { grade: "STRONG", critique: "Starts right on the hero subject. Hook captured within 1.2s.", recommendation: "Great fast action start." },
-    audio: { grade: "STRONG", critique: "Vocal energy is confident and clear with low background noise.", recommendation: "Maintain this volume balance." },
-    framing: { grade: "STRONG", critique: "Front lighting and stable 9:16 vertical composition.", recommendation: "Ready for social deployment." },
-    overall: "STRONG",
-    measured
+    simulated: true,
+    hook: notRated,
+    audio: notRated,
+    framing: notRated,
+    overall: "NOT_RATED",
+    measured: {
+      bytes: (up && up.size) || null,
+      durationSec: null,
+      wordsPerMinute: null,
+      framesAnalyzed: null,
+      hasAudio: null,
+      note: "No measurements were taken. Duration, pacing, and audio presence require the AI critic.",
+    },
   };
   res.json({
+    simulated: true,
     report,
-    transcript: cleanTranscript || "Transcript unavailable in local mode — add GEMINI_API_KEY for transcription. Grading used clip metadata.",
+    transcript: "Transcript unavailable — the AI video critic is unavailable (no GEMINI_API_KEY configured). This clip was not analyzed.",
     videoUrl,
-    planCheck,
-    engine: "local-fallback"
+    planCheck: null,
+    engine: "local-fallback (simulated)",
+    message: "Simulated result: the AI video critic is not configured, so this clip was not analyzed. No grades or measurements were generated.",
   });
 });
 
@@ -1787,11 +1872,14 @@ app.post('/api/content/calendar/reset', (req, res) => {
 });
 
 app.get('/api/content/distribution', (req, res) => {
+  const conn = (id) => isPlatformConnected(id);
   res.json({
-    gbp: { connected: true, lastPost: "2 days ago" },
-    facebook: { connected: true, lastPost: "Yesterday" },
-    instagram: { connected: true, lastPost: "3 days ago" },
-    mailchimp: { connected: false }
+    gbp: { connected: conn("google"), lastPost: null },
+    facebook: { connected: conn("facebook"), lastPost: null },
+    instagram: { connected: conn("instagram"), lastPost: null },
+    mailchimp: { connected: false },
+    demo: true,
+    note: "No publishing pathway is connected in this build. Connect a platform before publishing."
   });
 });
 
@@ -3103,13 +3191,19 @@ if (!state.connections) {
   state.connections = {
     provider: "Ayrshare",
     platforms: [
-      { id: "facebook", label: "Facebook Page", connected: true, authMode: "OAuth 2.0 (Direct)" },
-      { id: "instagram", label: "Instagram Professional", connected: true, authMode: "Meta Graph API" },
-      { id: "google", label: "Google Business Profile", connected: true, authMode: "Google My Business API" },
+      { id: "facebook", label: "Facebook Page", connected: false, authMode: "OAuth 2.0 (Direct)" },
+      { id: "instagram", label: "Instagram Professional", connected: false, authMode: "Meta Graph API" },
+      { id: "google", label: "Google Business Profile", connected: false, authMode: "Google My Business API" },
       { id: "tiktok", label: "TikTok Business", connected: false, authMode: "TikTok Marketing API" },
       { id: "youtube", label: "YouTube Shorts", connected: false, authMode: "Google OAuth" }
     ]
   };
+}
+// One-time correction: earlier builds seeded facebook/instagram/google as connected
+// with fictional account names ("Nonna's Corner Deli"). No real OAuth flow exists in
+// this build, so reset any platform that never completed a genuine OAuth exchange.
+for (const p of state.connections?.platforms || []) {
+  if (p.id !== "demo-pos" && !p.oauthCompletedAt) p.connected = false;
 }
 
 app.get('/api/connections', (req, res) => {
@@ -3119,11 +3213,15 @@ app.get('/api/connections', (req, res) => {
     provider: state.connections?.provider || "Ayrshare",
     connectedCount,
     platforms,
-    gbp: { connected: true, locationName: "Nonna's Corner Deli - Main St" },
-    meta: { connected: true, account: "Nonna's Deli Page" },
-    instagram: { connected: true, handle: "@nonnascorner" },
+    // Demo/simulation status: the OAuth flows behind these platforms are not wired
+    // up in this build, so no live account is connected. Names below are null until
+    // a genuine connection is established.
+    demo: connectedCount === 0,
+    gbp: { connected: false, locationName: null },
+    meta: { connected: false, account: null },
+    instagram: { connected: false, handle: null },
     mailchimp: { connected: false },
-    pos: { connected: true, provider: "Square POS" }
+    pos: { connected: false, provider: null }
   });
 });
 
@@ -3148,22 +3246,15 @@ app.get('/api/connections/oauth/:platform/start', (req, res) => {
     provider: state.connections?.provider || "Ayrshare",
     live: false,
     authorization_url: null,
-    message: `Connected ${platform} via Unified API provider.`
+    message: `OAuth for ${platform} is not wired up in this build. No connection was created.`
   });
 });
 
 app.post('/api/connections/oauth/callback', (req, res) => {
-  const { platform } = req.body || {};
-  if (state.connections?.platforms) {
-    const p = state.connections.platforms.find(x => x.id === platform);
-    if (p) p.connected = true;
-  }
-  const platforms = state.connections?.platforms || [];
-  res.json({
-    provider: state.connections?.provider || "Ayrshare",
-    connectedCount: platforms.filter(p => p.connected).length,
-    platforms,
-    status: "ok"
+  // The OAuth exchange is not implemented: refuse to mark anything connected.
+  return res.status(501).json({
+    detail: "OAuth is not implemented in this build. No platform was connected.",
+    connected: false
   });
 });
 
@@ -3171,21 +3262,21 @@ app.get('/api/connections/pathways', (req, res) => {
   res.json({ pathways: ["gbp", "facebook", "instagram", "sms"] });
 });
 
-// Google Business Profile integration
+// Google Business Profile integration (demo: no live Google connection exists in this build)
 app.get('/api/google-business/start', (req, res) => {
-  res.json({ authorization_url: null, message: "Google publishing is in demo mode" });
+  res.json({ authorization_url: null, message: "Google publishing is in demo mode — no live Google connection exists." });
 });
 
 app.get('/api/google-business/status', (req, res) => {
-  res.json({ connected: true, location: { name: "locations/123", title: "Nonna's Corner Deli" } });
+  res.json({ connected: false, status: "not_configured", demo: true, location: null });
 });
 
 app.get('/api/google-business/locations', (req, res) => {
-  res.json({ locations: [{ name: "locations/123", title: "Nonna's Corner Deli (Main St)" }] });
+  res.json({ locations: [], demo: true, note: "Google Business Profile is not connected. No live locations exist in this build." });
 });
 
 app.put('/api/google-business/location', (req, res) => {
-  res.json({ status: "ok" });
+  res.status(501).json({ detail: "Google Business Profile is not connected. Location selection is unavailable in demo mode." });
 });
 
 app.delete('/api/google-business/connection', (req, res) => {
@@ -4077,10 +4168,39 @@ app.get('/api/copilot/tools', (req, res) => {
   });
 });
 
+// Summarizes marketing performance from stored/imported data only. Never invents
+// figures: metrics the store cannot support are reported as unavailable, and all
+// numbers carry a demo label until real reports are imported.
+function copilotAnalyticsSummary() {
+  const sources = state.attribution_sources || {};
+  const sum = (rows, key) => (rows || []).reduce((s, r) => s + (Number(r[key]) || 0), 0);
+  const spend = sum(sources.meta, "spend") + sum(sources.tiktok, "spend")
+    + (state.ad_spend_logs || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  const attributedRevenue = sum(sources.pos, "netAttributedRevenue");
+  const walkIns = (state.spots || []).reduce((s, x) => s + (Number(x.redemptions) || 0), 0);
+  const roas = spend > 0 && attributedRevenue > 0 ? attributedRevenue / spend : null;
+  return {
+    spend: Math.round(spend * 100) / 100,
+    attributedRevenue: Math.round(attributedRevenue * 100) / 100,
+    walkIns,
+    roas: roas === null ? null : Math.round(roas * 100) / 100,
+    dataSource: "demo",
+    note: "Sample seed data. Import real Meta/TikTok/GBP/POS reports in the Attribution Hub for live figures."
+  };
+}
+
+function copilotAnalyticsLine(a) {
+  const roasText = a.roas === null
+    ? "ROAS unavailable — import POS revenue and ad spend reports to compute it"
+    : `blended ROAS ${a.roas}x`;
+  return `Cross-channel analytics (sample data): ${roasText} on $${a.spend.toFixed(2)} tracked ad spend, ${a.walkIns} QR walk-ins recorded, $${a.attributedRevenue.toFixed(2)} attributed revenue. ${a.note}`;
+}
+
 app.post('/api/copilot/chat', async (req, res) => {
   const { message, history, activeView } = req.body || {};
   const query = (message || "").trim();
   const bp = state.brand_profile || {};
+  const analytics = copilotAnalyticsSummary();
   const kn = state.longitudinal_knowledge || {};
 
   if (!query) {
@@ -4093,7 +4213,9 @@ app.post('/api/copilot/chat', async (req, res) => {
     try {
       const systemInstruction = `You are the Co-Captain AI operating system for OmniLocal #1 Revenue Engine, managing marketing, physical QR generation, attribution reconciliation, and margin guardrails for ${bp.name || "Local Business"} (${bp.industryLabel || "Independent Business"}).
 Current active view: ${activeView || "overview"}.
-Current Blended ROAS: 6.84x, Weekly Spend: $299.00, Maturity Level: ${kn.maturityLevel || "Month 3: Pattern Matched"}.
+Current analytics (from stored data, sample/demo seed until real reports are imported): ${copilotAnalyticsLine(analytics)}
+Maturity Level: ${kn.maturityLevel || "Month 3: Pattern Matched"}.
+Never present sample or demo figures as live business results; always label them as sample data.
 You have access to tools that directly control the application. Always invoke the appropriate tool declaration whenever the user asks to navigate, generate/schedule campaigns, update contacts, pull analytics, generate print assets, lock margins, stage ad spend for human approval, redeem vouchers, export codes, or switch verticals. Respond concisely and professionally.`;
 
       const priorTurns = Array.isArray(history)
@@ -4172,7 +4294,7 @@ You have access to tools that directly control the application. Always invoke th
         notes: "Open Tue-Sat 11am-8pm. VIP bookings prioritized."
       }
     };
-    replyText = `Updated directory and local map contact card for ${bp.name}. Google Business Profile synchronization updated.`;
+    replyText = `Updated the local directory contact card for ${bp.name}. Note: Google Business Profile is not connected in this build, so nothing was synced to Google.`;
   } else if (q.includes("campaign") || q.includes("schedule") || q.includes("sprint") || q.includes("arcade") || q.includes("reels")) {
     const track = q.includes("video") || q.includes("reel") ? "track_a" : q.includes("drip") || q.includes("email") ? "track_c" : q.includes("map") || q.includes("search") ? "track_d" : "track_b";
     matchedTool = {
@@ -4196,7 +4318,7 @@ You have access to tools that directly control the application. Always invoke th
         focusMetric: "blended_roas"
       }
     };
-    replyText = `Retrieved cross-channel analytics: Blended ROAS is 6.84x on $299 weekly ad spend, delivering 129 verified walk-ins and $740 direct-mail replacement value.`;
+    replyText = copilotAnalyticsLine(analytics);
   } else if (q.includes("margin") || q.includes("floor") || q.includes("discount cap") || q.includes("discount ceiling")) {
     matchedTool = {
       name: "tune_margin_floor",
@@ -4283,7 +4405,7 @@ app.post('/api/brand/contacts/update', (req, res) => {
 
   res.json({
     status: "ok",
-    message: `Updated directory & Google Business Profile contacts for ${bp.name}.`,
+    message: `Updated local directory contacts for ${bp.name}. Google Business Profile is not connected, so nothing was synced to Google.`,
     contacts: {
       name: bp.name,
       phone: bp.phone,

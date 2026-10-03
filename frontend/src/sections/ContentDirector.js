@@ -317,7 +317,7 @@ export default function ContentDirector() {
           <div className="mt-5 grid grid-cols-1 md:grid-cols-[220px_1fr] gap-4" data-testid="uploaded-analysis">
             <video src={uploadedVideo} controls className="rounded-lg w-full" style={{ maxHeight: 320, background: "#000" }} data-testid="uploaded-video" />
             <div className="p-4 rounded-lg" style={{ background: "var(--surface-alt)" }}>
-              <Overline>Transcript (Whisper)</Overline>
+              <Overline>Transcript</Overline>
               <p className="text-sm mt-1 italic" style={{ color: "var(--text)" }} data-testid="critic-transcript">
                 {transcriptResult ? `“${transcriptResult}”` : "No speech detected in this clip."}
               </p>
@@ -353,9 +353,17 @@ export default function ContentDirector() {
               <span className="mono text-sm">{report.filename}</span>
               <div className="flex items-center gap-2"><span className="overline">Overall</span><GradeBadge grade={report.overall} size="lg" /></div>
             </div>
+            {report.simulated || report.overall === "NOT_RATED" ? (
+              <div className="mt-2 text-xs font-bold px-2 py-1 rounded inline-block" data-testid="critic-simulated"
+                style={{ background: "#FEF5E7", color: "#B9770E" }}>
+                SIMULATED — the AI video critic is not configured, so this clip was not analyzed.
+              </div>
+            ) : null}
             {report.measured && (
               <div className="mono text-xs mt-1" style={{ color: "var(--text-secondary)" }} data-testid="critic-measured">
-                {report.measured.durationSec}s · {report.measured.wordsPerMinute} wpm · {report.measured.framesAnalyzed} frames analyzed{report.measured.hasAudio ? "" : " · no audio"}
+                {report.measured.note ? report.measured.note : (
+                  <>{report.measured.durationSec}s · {report.measured.wordsPerMinute} wpm · {report.measured.framesAnalyzed} frames analyzed{report.measured.hasAudio ? "" : " · no audio"}</>
+                )}
               </div>
             )}
             <div className="mt-2">
